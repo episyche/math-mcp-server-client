@@ -3,19 +3,28 @@ import argparse
 import json
 import os
 import sys
+import logging
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+logger = logging.getLogger("mcp_client")
+if not logger.handlers:
+    logging.basicConfig(level=logging.INFO)
+
 
 
 def get_available_server_scripts() -> dict[str, str]:
     current_dir = os.path.dirname(os.path.abspath(__file__))
     return {
-        "math": os.path.join(current_dir, "math_mcp_server.py"),
-        "integration": os.path.join(current_dir, "integration_mcp_server.py"),
-        "differentiation": os.path.join(current_dir, "differentiation_mcp_server.py"),
-        "probability": os.path.join(current_dir, "probability_mcp_server.py"),
-        "venn": os.path.join(current_dir, "venn_mcp_server.py"),
+        "arithmetic": os.path.join(current_dir, "maths_mcp_server", "arithmetic_mcp_server.py"),
+        "integration": os.path.join(current_dir, "maths_mcp_server", "integration_mcp_server.py"),
+        "differentiation": os.path.join(current_dir, "maths_mcp_server", "differentiation_mcp_server.py"),
+        "probability": os.path.join(current_dir, "maths_mcp_server", "probability_mcp_server.py"),
+        "venn": os.path.join(current_dir, "maths_mcp_server", "venn_mcp_server.py"),
+        "grammar": os.path.join(current_dir, "english_mcp_server", "grammar_mcp_server.py"),
+        "translate": os.path.join(current_dir, "english_mcp_server", "translate_mcp_server.py"),
+        "botany": os.path.join(current_dir, "biology_mcp_server", "botany_mcp_server.py"),
+        "zoology": os.path.join(current_dir, "biology_mcp_server", "zoology_mcp_server.py"),
     }
 
 
@@ -54,11 +63,15 @@ def llm_route_task(question: str, model: str | None = None) -> tuple[str | None,
         "You route math queries to MCP servers and tools. "
         "Choose exactly one server and one tool and return arguments. "
         "Servers and tools:\n"
-        "- math: add(a,b), subtract(a,b), multiply(a,b), divide(a,b)\n"
+        "- arithmetic: add(a,b), subtract(a,b), multiply(a,b), divide(a,b)\n"
         "- integration: integrate_indefinite(expression, variable), integrate_definite(expression, variable, lower, upper)\n"
         "- differentiation: derivative(expression, variable, order)\n"
         "- probability: complement(p), union_independent(p_a, p_b), intersection_independent(p_a, p_b), conditional(p_a_and_b, p_b), bayes(p_a, p_b_given_a, p_b)\n"
         "- venn: two_set_regions(n_a, n_b, n_a_intersect_b), three_set_regions(n_a, n_b, n_c, n_ab, n_ac, n_bc, n_abc)\n"
+        "- grammar: check_grammar(text, use_languagetool=True)\n"
+        "- translate: translate_to_english(text, source_language=None), translate_from_english(text, target_language)\n"
+        "- botany: plant_summary(name, sentences=3), plant_taxonomy(name), is_edible(name), medicinal_uses(name), leaf_area_index(total_leaf_area_m2, ground_area_m2), photosynthesis_rate(light_umol_m2_s, co2_ppm, temperature_c), transpiration_rate(stomatal_conductance_mol_m2_s, vpd_kpa), growth_rate_logistic(r_per_day, carrying_capacity, initial_biomass, days), chlorophyll_index(red_reflectance, nir_reflectance), classify_life_form(height_m), seed_dispersal_methods(name), drought_stress_index(soil_moisture_vol_pct, wilting_point_vol_pct=10.0, field_capacity_vol_pct=35.0)\n"
+        "- zoology: animal_summary(name, sentences=3), animal_taxonomy(name), basal_metabolic_rate(body_mass_kg), field_of_view(predator), max_running_speed(body_mass_kg), daily_food_requirement(body_mass_kg, trophic_level='omnivore'), thermal_comfort_index(ambient_c, preferred_c), population_growth_rate(r_per_year, n0, years), predator_prey_equilibrium(prey_growth, pred_efficiency, pred_death, encounter_rate), habitat_suitability(temperature_c, rainfall_mm), lifespan_estimate(body_mass_kg), classify_diet(teeth_shape)\n"
         "Rules: Return ONLY JSON with keys server, tool, arguments. "
         "Use numbers for numeric fields. Use strings for expressions/variables/bounds. "
         "Prefer Pythonic exponent '**' in expressions. If the query mentions 'from A to B', use definite integral with lower=A, upper=B."
@@ -88,7 +101,7 @@ def llm_route_task(question: str, model: str | None = None) -> tuple[str | None,
 
 def _normalize_arguments(server: str, tool: str, args: dict) -> dict:
     # Cast types as expected by servers
-    if server == "math":
+    if server in ("arithmetic", "math"):
         return {"a": float(args.get("a")), "b": float(args.get("b"))}
     if server == "integration":
         if tool == "integrate_indefinite":
@@ -129,6 +142,9 @@ def _normalize_arguments(server: str, tool: str, args: dict) -> dict:
             except Exception:
                 normalized[key] = value
         return normalized
+    if server in ("grammar", "translate"):
+        # Pass-through for English utilities
+        return args
     return args
 
 
@@ -142,6 +158,9 @@ async def handle_question(question: str, model: str | None = None) -> str:
     if not server_script or not os.path.exists(server_script):
         return f"Selected server '{server}' is not available."
 
+    # Log which server/tool were selected by the router
+    logger.info("router selection: server=%s tool=%s args=%s", server, tool, arguments)
+
     normalized_args = _normalize_arguments(server, tool, arguments)
 
     server_params = StdioServerParameters(
@@ -149,6 +168,8 @@ async def handle_question(question: str, model: str | None = None) -> str:
         args=[server_script],
         env=None,
     )
+
+    logger.info("launching: script=%s tool=%s normalized_args=%s", server_script, tool, normalized_args)
 
     async with stdio_client(server_params) as (read, write):
         async with ClientSession(read, write) as session:

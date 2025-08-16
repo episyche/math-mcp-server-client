@@ -2,11 +2,23 @@
 
 ## Servers
 
-- `math_mcp_server.py`: Basic arithmetic tools (add, subtract, multiply, divide)
-- `integration_mcp_server.py`: Symbolic and definite integration tools
-- `differentiation_mcp_server.py`: Symbolic differentiation tools
-- `probability_mcp_server.py`: Common probability operations
-- `venn_mcp_server.py`: Venn diagram region calculations (2-set and 3-set)
+All math-related MCP servers are grouped under the `maths_mcp_server/` package:
+
+- `maths_mcp_server/arithmetic_mcp_server.py`: Basic arithmetic tools (add, subtract, multiply, divide)
+- `maths_mcp_server/integration_mcp_server.py`: Symbolic and definite integration tools
+- `maths_mcp_server/differentiation_mcp_server.py`: Symbolic differentiation tools
+- `maths_mcp_server/probability_mcp_server.py`: Common probability operations
+- `maths_mcp_server/venn_mcp_server.py`: Venn diagram region calculations (2-set and 3-set)
+
+All English-related MCP servers are grouped under the `english_mcp_server/` package:
+
+- `english_mcp_server/grammar_mcp_server.py`: Grammar checking for English text
+- `english_mcp_server/translate_mcp_server.py`: Translate to English and from English to a target language
+
+All Biology-related MCP servers are grouped under the `biology_mcp_server/` package:
+
+- `biology_mcp_server/botany_mcp_server.py`: Plant utilities (summaries, taxonomy, growth, indices)
+- `biology_mcp_server/zoology_mcp_server.py`: Animal utilities (summaries, metabolism, ecology)
 
 ## Setup
 
@@ -21,21 +33,32 @@ pip install -r requirements.txt
 Each server is an MCP server over stdio. Launch one with Python:
 
 ```bash
-python integration_mcp_server.py
+python maths_mcp_server/integration_mcp_server.py
 ```
 
 Replace with any of:
 
 ```bash
-python differentiation_mcp_server.py
-python probability_mcp_server.py
-python venn_mcp_server.py
-python math_mcp_server.py
+python maths_mcp_server/differentiation_mcp_server.py
+python maths_mcp_server/probability_mcp_server.py
+python maths_mcp_server/venn_mcp_server.py
+python maths_mcp_server/arithmetic_mcp_server.py
+python english_mcp_server/grammar_mcp_server.py
+python english_mcp_server/translate_mcp_server.py
+python biology_mcp_server/botany_mcp_server.py
+python biology_mcp_server/zoology_mcp_server.py
 ```
 
 Your MCP-capable client should connect via stdio and list available tools.
 
 ## Tools
+
+### English servers
+- Grammar (`english_mcp_server/grammar_mcp_server.py`)
+  - `check_grammar(text: str, use_languagetool: bool = True) -> dict`
+- Translate (`english_mcp_server/translate_mcp_server.py`)
+  - `translate_to_english(text: str, source_language: str | None = None) -> str`
+  - `translate_from_english(text: str, target_language: str) -> str`
 
 ### Integration server (`integration_mcp_server.py`)
 - `integrate_indefinite(expression: str, variable: str) -> str`

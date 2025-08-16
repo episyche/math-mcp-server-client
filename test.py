@@ -1,7 +1,7 @@
 import asyncio
 import os
 
-from math_mcp_client import handle_question
+from mcp_client import handle_question
 
 
 QUESTIONS = [
@@ -9,6 +9,32 @@ QUESTIONS = [
     "what is 12 plus 30",
     "divide 10 by 2",
     "what is the difference between 10 and 3",
+    # English - grammar
+    "please fix grammar in this sentence it be bad",
+    # English - translate
+    "translate 'Hola, ¿cómo estás?' to English",
+    "translate from English to Spanish: 'Good morning, how are you?'",
+    # Biology - botany
+    "give a brief summary of the plant sunflower",
+    "is basil edible",
+    "what are medicinal uses of turmeric",
+    "compute leaf area index when total leaf area is 12 and ground area is 4",
+    "estimate photosynthesis rate with light 800, co2 500 and temperature 25",
+    "classify life form for a plant of height 8 meters",
+    "what are seed dispersal methods for dandelion",
+    "compute drought stress index for soil moisture 12",
+    # Biology - zoology
+    "give a brief summary of lion",
+    "estimate basal metabolic rate for a 70 kg animal",
+    "what is the field of view for a predator",
+    "estimate max running speed for a 50 kg animal",
+    "daily food requirement for a 500 kg herbivore",
+    "thermal comfort index at ambient 15 with preferred 20",
+    "population growth with r 0.2 starting at 100 for 5 years",
+    "predator prey equilibrium with prey growth 0.8, pred efficiency 0.02, pred death 0.1, encounter 0.5",
+    "habitat suitability for temperature 22 and rainfall 800",
+    "classify diet for teeth shape sharp",
+    "lifespan estimate for a 70 kg animal",
     # Differentiation
     "differentiate sin(x) * x**2 with respect to x",
     "find the second derivative of x**5 with respect to x",
