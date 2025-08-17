@@ -29,17 +29,35 @@ def get_available_server_scripts() -> dict[str, str]:
 
 
 async def call_tool(session: ClientSession, name: str, **arguments) -> str:
-    result = await session.call_tool(name=name, arguments=arguments)
+    try:
+        result = await session.call_tool(name=name, arguments=arguments)
+    except Exception as exc:
+        return f"Tool call failed: {exc}"
+
     try:
         content_items = getattr(result, "content", []) or []
-        if content_items:
-            first = content_items[0]
-            text = getattr(first, "text", None)
+        if not content_items:
+            return str(result)
+
+        # Prefer text content if available
+        for item in content_items:
+            text = getattr(item, "text", None)
             if text is not None:
                 return text
-        return str(result)
-    except Exception:
-        return str(result)
+
+        # Fallback: try JSON-like payloads
+        for item in content_items:
+            data = getattr(item, "json", None)
+            if data is not None:
+                try:
+                    return json.dumps(data, ensure_ascii=False)
+                except Exception:
+                    pass
+
+        # Last resort: stringify the first content item
+        return str(content_items[0])
+    except Exception as exc:
+        return f"Could not parse tool result: {exc}"
 
 
 def ensure_openai_client():
@@ -74,6 +92,7 @@ def llm_route_task(question: str, model: str | None = None) -> tuple[str | None,
         "- zoology: animal_summary(name, sentences=3), animal_taxonomy(name), basal_metabolic_rate(body_mass_kg), field_of_view(predator), max_running_speed(body_mass_kg), daily_food_requirement(body_mass_kg, trophic_level='omnivore'), thermal_comfort_index(ambient_c, preferred_c), population_growth_rate(r_per_year, n0, years), predator_prey_equilibrium(prey_growth, pred_efficiency, pred_death, encounter_rate), habitat_suitability(temperature_c, rainfall_mm), lifespan_estimate(body_mass_kg), classify_diet(teeth_shape)\n"
         "Rules: Return ONLY JSON with keys server, tool, arguments. "
         "Use numbers for numeric fields. Use strings for expressions/variables/bounds. "
+        "Use JSON booleans for boolean fields (e.g., predator: true for predator, false for prey). "
         "Prefer Pythonic exponent '**' in expressions. If the query mentions 'from A to B', use definite integral with lower=A, upper=B."
     )
 
@@ -145,6 +164,50 @@ def _normalize_arguments(server: str, tool: str, args: dict) -> dict:
     if server in ("grammar", "translate"):
         # Pass-through for English utilities
         return args
+    if server == "zoology":
+        # Per-tool casting for zoology
+        def _to_bool(value: object) -> bool:
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, (int, float)):
+                return bool(value)
+            s = str(value).strip().lower()
+            if s in {"true", "yes", "y", "1", "predator"}:
+                return True
+            if s in {"false", "no", "n", "0", "prey"}:
+                return False
+            # default: False to avoid validation error on random strings
+            return False
+
+        tool_name = tool
+        # Cast common numeric fields generically when present
+        numeric_float_keys = {
+            "body_mass_kg", "ambient_c", "preferred_c", "r_per_year", "n0",
+            "prey_growth", "pred_efficiency", "pred_death", "encounter_rate",
+            "temperature_c", "rainfall_mm",
+        }
+        numeric_int_keys = {"years", "sentences"}
+
+        normalized: dict = {}
+        for key, value in args.items():
+            if tool_name == "field_of_view" and key == "predator":
+                normalized[key] = _to_bool(value)
+                continue
+            if key in numeric_float_keys:
+                try:
+                    normalized[key] = float(value)
+                    continue
+                except Exception:
+                    pass
+            if key in numeric_int_keys:
+                try:
+                    normalized[key] = int(value)
+                    continue
+                except Exception:
+                    pass
+            # pass-through for strings or anything else
+            normalized[key] = value
+        return normalized
     return args
 
 
@@ -171,11 +234,15 @@ async def handle_question(question: str, model: str | None = None) -> str:
 
     logger.info("launching: script=%s tool=%s normalized_args=%s", server_script, tool, normalized_args)
 
-    async with stdio_client(server_params) as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            result_text = await call_tool(session, tool, **normalized_args)
-            return result_text
+    try:
+        async with stdio_client(server_params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result_text = await call_tool(session, tool, **normalized_args)
+                return result_text
+    except Exception as exc:
+        logger.exception("tool execution failed: server=%s tool=%s", server, tool)
+        return f"Error executing tool {tool}: {exc}"
 
 
 async def main() -> None:
