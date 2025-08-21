@@ -2,16 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
-import sys
 import logging
+import os
 import re
+import sys
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
+import requests
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-
 
 # ---------- Data model: Capability Graph ----------
 
@@ -33,7 +33,9 @@ class ToolSpec:
 @dataclass
 class ServerSpec:
     key: str
-    script_path: str
+    command: str
+    args: List[str]
+    env: Optional[Dict[str, str]] = None
     tools: List[ToolSchema] = field(default_factory=list)
 
 
@@ -174,6 +176,39 @@ DEFAULT_CAPABILITIES: Dict[str, List[ToolSchema]] = {
         ToolSchema("lifespan_estimate", parameters={"body_mass_kg": "number"}),
         ToolSchema("classify_diet", parameters={"teeth_shape": "string"}),
     ],
+     "youtube": [
+        ToolSchema("refresh_token", parameters={}),
+        ToolSchema("list_videos", parameters={}),
+        ToolSchema("search_videos", parameters={"arguments": "dict"}),
+        ToolSchema("upload_video", parameters={"arguments": "dict"}),
+        ToolSchema("add_comment", parameters={"arguments": "dict"}),
+        ToolSchema("reply_comment", parameters={"arguments": "dict"}),
+        ToolSchema("get_video_comments", parameters={"arguments": "dict"}),
+        ToolSchema("rate_video", parameters={"arguments": "dict"}),
+        ToolSchema("video_analytics", parameters={"arguments": "dict"}),
+        ToolSchema("channel_analytics", parameters={"channel_id": "string"}),
+        ToolSchema("remove_video", parameters={"arguments": "dict"}),
+    ],
+    "tiktok": [
+        ToolSchema("tiktok_get_subtitle", parameters={"tiktok_url": "string", "language_code": "string"}),
+        ToolSchema("tiktok_get_post_details", parameters={"tiktok_url": "string"}),
+        ToolSchema("tiktok_search", parameters={"query": "string", "cursor": "string", "search_uid": "string"}),
+    ],
+    "x": [
+        ToolSchema("create_post", parameters={"a": "string"}),
+        ToolSchema("delete_post", parameters={"a": "string"}),
+        ToolSchema("get_post_by_id", parameters={"a": "string"}),
+        ToolSchema("get_my_user_info", parameters={}),
+        ToolSchema("get_all_post_of_user", parameters={"a": "string"}),
+        ToolSchema("get_user_by_username", parameters={"a": "string"}),
+        ToolSchema("follow_user", parameters={"a": "string", "b": "string"}),
+        ToolSchema("unfollow_user", parameters={"a": "string", "b": "string"}),
+        ToolSchema("recent_post_by_query", parameters={"a": "string"}),
+        ToolSchema("like_post", parameters={"a": "string", "b": "string"}),
+        ToolSchema("unlike_post", parameters={"a": "string", "b": "string"}),
+        ToolSchema("get_liked_post_of_user", parameters={"a": "string"}),
+        ToolSchema("recent_post_count_by_query", parameters={"a": "string"}),
+    ],
 }
 
 
@@ -181,10 +216,19 @@ async def build_capability_graph(server_scripts: Dict[str, str]) -> CapabilityGr
     logger = logging.getLogger("orchestrator")
     graph = CapabilityGraph()
     for server_key, script_path in server_scripts.items():
-        if not os.path.exists(script_path):
+        # Backward-compatible: accept either a path string or a dict with command/args
+        if isinstance(script_path, dict):
+            command = script_path.get("command")
+            args = script_path.get("args", [])
+            env = script_path.get("env") if isinstance(script_path.get("env"), dict) else None
+        else:
+            command = sys.executable
+            args = [script_path]
+            env = None
+        if not command:
             continue
-        logger.info("discovering tools for server=%s script=%s", server_key, script_path)
-        server_params = StdioServerParameters(command=sys.executable, args=[script_path], env=None)
+        logger.info("discovering tools for server=%s command=%s args=%s", server_key, command, args)
+        server_params = StdioServerParameters(command=command, args=args, env=env)
         tools_for_server: List[ToolSchema] = []
         try:
             async with stdio_client(server_params) as (read, write):
@@ -204,19 +248,32 @@ async def build_capability_graph(server_scripts: Dict[str, str]) -> CapabilityGr
             # Keep discovery robust; skip servers that fail to start
             logger.exception("failed to discover tools for server=%s", server_key)
         # Fallback to defaults if discovery yielded nothing
-        if not tools_for_server and server_key in DEFAULT_CAPABILITIES:
-            logger.info("using default capability catalog for server=%s", server_key)
-            for schema in DEFAULT_CAPABILITIES[server_key]:
-                tools_for_server.append(schema)
-                graph.tools[f"{server_key}.{schema.name}"] = ToolSpec(
-                    server_key=server_key,
-                    tool_name=schema.name,
-                    schema=schema,
-                )
+        if not tools_for_server:
+            if server_key in DEFAULT_CAPABILITIES:
+                logger.info("using default capability catalog for server=%s", server_key)
+                for schema in DEFAULT_CAPABILITIES[server_key]:
+                    tools_for_server.append(schema)
+                    graph.tools[f"{server_key}.{schema.name}"] = ToolSpec(
+                        server_key=server_key,
+                        tool_name=schema.name,
+                        schema=schema,
+                    )
+            # Extra: if server key contains 'tiktok', use TikTok defaults
+            elif "tiktok" in server_key.lower() and "tiktok" in DEFAULT_CAPABILITIES:
+                logger.info("using TikTok default capability catalog for server=%s", server_key)
+                for schema in DEFAULT_CAPABILITIES["tiktok"]:
+                    tools_for_server.append(schema)
+                    graph.tools[f"{server_key}.{schema.name}"] = ToolSpec(
+                        server_key=server_key,
+                        tool_name=schema.name,
+                        schema=schema,
+                    )
 
         graph.servers[server_key] = ServerSpec(
             key=server_key,
-            script_path=script_path,
+            command=command,
+            args=args,
+            env=env,
             tools=tools_for_server,
         )
     return graph
@@ -284,6 +341,102 @@ def simple_planner(master_question: str, graph: CapabilityGraph) -> Plan:
         add_first_match(["grammar.check_grammar"])
     if any(k in q for k in ["translate", "english"]):
         add_first_match(["translate."])
+    # Heuristic for creating a post on X/Twitter
+    if not chosen and any(k in q for k in ["twitter", " on x", " on twitter", "tweet", "create post", "create a post", "post on x", "post on twitter"]):
+        # Try to infer the post text
+        post_text = None
+        m = re.search(r"(?i)post\s+(.+)$", master_question.strip())
+        if m:
+            post_text = m.group(1).strip()
+        if not post_text:
+            # Fallback: remove the leading command-like words
+            post_text = re.sub(r"(?i)create\s+(a\s+)?(twitter|x)\s+post\s*", "", master_question).strip()
+        args_hint = {"a": post_text} if post_text else {}
+        if "x.create_post" in graph.tools:
+            chosen.append(PlanStep(
+                id=f"step_{len(chosen)+1}",
+                intent=f"create post for {master_question}",
+                tool_key="x.create_post",
+                args_hint=args_hint,
+                depends_on=[],
+            ))
+            logger.info("planner selected x.create_post via heuristic with args=%s", args_hint)
+    # Heuristic for X/Twitter queries
+    if not chosen and any(k in q for k in ["twitter", " on x", " on twitter", "tweets", "tweet", " x ", " x:", "@", "x user", "twitter user", "user details", "user info"]):
+        # Try to extract an @username or a 'username <name>' phrase
+        uname_match = re.search(r"@([A-Za-z0-9_]{1,15})", master_question)
+        if not uname_match:
+            uname_match = re.search(r"username\s+([A-Za-z0-9_]{1,15})", master_question, re.IGNORECASE)
+        if uname_match and "x.get_user_by_username" in graph.tools:
+            chosen.append(PlanStep(
+                id=f"step_{len(chosen)+1}",
+                intent=f"get user by username for {master_question}",
+                tool_key="x.get_user_by_username",
+                args_hint={"a": uname_match.group(1)},
+                depends_on=[],
+            ))
+            logger.info("planner selected x.get_user_by_username via heuristic")
+        elif "x.get_my_user_info" in graph.tools:
+            chosen.append(PlanStep(
+                id=f"step_{len(chosen)+1}",
+                intent=f"get user info for {master_question}",
+                tool_key="x.get_my_user_info",
+                args_hint={},
+                depends_on=[],
+            ))
+            logger.info("planner selected x.get_my_user_info via heuristic")
+    # Heuristic for TikTok queries
+    if not chosen and any(k in q for k in ["tiktok", "tik tok", "tt video", "tiktok video", "tiktok post", "tiktok search"]):
+        # Choose specific tool by intent keywords
+        if "subtitle" in q or "subtitles" in q:
+            add_first_match(["tiktok.tiktok_get_subtitle"])
+        elif any(k in q for k in ["detail", "details", "info", "information"]):
+            add_first_match(["tiktok.tiktok_get_post_details"])
+        elif any(k in q for k in ["search", "find", "videos", "posts"]):
+            add_first_match(["tiktok.tiktok_search"])
+        else:
+            # default to search for generic tiktok queries
+            add_first_match(["tiktok.tiktok_search"])
+    # Heuristic for YouTube actions
+    if not chosen:
+        # Delete video intent
+        if ("youtube" in q or "video" in q) and any(k in q for k in ["delete", "remove"]):
+            vid_match = re.search(r"([A-Za-z0-9_-]{8,})", master_question)
+            args_hint = {}
+            if vid_match:
+                args_hint = {"arguments": {"video_id": vid_match.group(1)}}
+            key = "youtube.remove_video"
+            if key in graph.tools:
+                chosen.append(PlanStep(
+                    id=f"step_{len(chosen)+1}",
+                    intent=f"remove video for {master_question}",
+                    tool_key=key,
+                    args_hint=args_hint,
+                    depends_on=[],
+                ))
+                logger.info("planner selected youtube.remove_video via heuristic with args=%s", args_hint)
+        # Upload video intent (only if explicit upload or file path present)
+        elif ("upload" in q or re.search(r"[a-zA-Z]:\\\\[^\n\r]+?\.(mp4|mov|mkv|avi)", master_question) is not None):
+            file_match = re.search(r"([a-zA-Z]:\\[^\n\r]+?\.(mp4|mov|mkv|avi))", master_question)
+            title_match = re.search(r"(?:named|title is|title)\s+\"?([^\"\n\r]+)\"?", master_question, re.IGNORECASE)
+            args_hint: Dict[str, Any] = {}
+            if file_match:
+                args_hint["arguments"] = {"file": file_match.group(1)}
+            if title_match:
+                if "arguments" not in args_hint:
+                    args_hint["arguments"] = {}
+                args_hint["arguments"]["title"] = title_match.group(1).strip()
+            key = "youtube.upload_video"
+            if key in graph.tools:
+                chosen.append(PlanStep(
+                    id=f"step_{len(chosen)+1}",
+                    intent=f"upload video for {master_question}",
+                    tool_key=key,
+                    args_hint=args_hint,
+                    depends_on=[],
+                ))
+                logger.info("planner selected youtube.upload_video via heuristic with args=%s", args_hint)
+
     if not chosen:
         # Fallback: pick the first tool in the graph
         if graph.tools:
@@ -320,7 +473,7 @@ def format_plan_diagram(plan: Plan) -> str:
 # ---------- Static capability graph (no runtime discovery) ----------
 
 
-def build_capability_graph_static(server_scripts: Dict[str, str]) -> CapabilityGraph:
+def build_capability_graph_static(server_scripts: Dict[str, Any]) -> CapabilityGraph:
     logger = logging.getLogger("orchestrator")
     graph = CapabilityGraph()
     logger.info("using static capability catalog; no runtime discovery")
@@ -333,9 +486,19 @@ def build_capability_graph_static(server_scripts: Dict[str, str]) -> CapabilityG
                 tool_name=schema.name,
                 schema=schema,
             )
+        if isinstance(script_path, dict):
+            command = script_path.get("command")
+            args = script_path.get("args", [])
+            env = script_path.get("env") if isinstance(script_path.get("env"), dict) else None
+        else:
+            command = sys.executable
+            args = [script_path]
+            env = None
         graph.servers[server_key] = ServerSpec(
             key=server_key,
-            script_path=script_path,
+            command=command or sys.executable,
+            args=args,
+            env=env,
             tools=tools_for_server,
         )
     return graph
@@ -351,6 +514,123 @@ def _tools_catalog_for_prompt(graph: CapabilityGraph) -> str:
         lines.append(f"- {key}({params})")
     return "\n".join(lines)
 
+def deepseek_api_call(system_prompt, user_prompt):
+    
+    url = "http://52.20.185.4:8006/v1/chat/completions"
+
+    payload = {
+        "messages": [
+            {
+                "content": system_prompt,
+                "role": "system"
+            },
+            {
+                "content": user_prompt,
+                "role": "user"
+            }
+        ],
+        # "model": "gpt-4o-mini",
+        "tool_choice": "none",
+        "stream": False
+    }
+
+    headers = {
+        "accept": "application/json",
+        "Content-Type": "application/json"
+    }
+
+    response = requests.post(url, headers=headers, data=json.dumps(payload))
+    print('deepseek resp ---------- ',response , response.text)
+    response = response.json()
+    
+    return response
+
+def safe_load_plan(content: str) -> Dict[str, Any]:
+    """
+    Parse LLM JSON output and always return a dict.
+    If the content is not a dict, return an empty dict.
+    """
+    # Attempt direct parse first
+    try:
+        data = json.loads(content or "{}")
+        if isinstance(data, dict):
+            return data
+        if isinstance(data, list):
+            return {"steps": data}
+        if isinstance(data, str):
+            try:
+                nested = json.loads(data)
+                if isinstance(nested, dict):
+                    return nested
+                if isinstance(nested, list):
+                    return {"steps": nested}
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Strip Markdown code fences if present
+    try:
+        text = content.strip()
+        if text.startswith("```"):
+            # remove opening fence with optional language tag
+            first_newline = text.find("\n")
+            if first_newline != -1:
+                text = text[first_newline + 1 :]
+            if text.endswith("```"):
+                text = text[: -3]
+        text = text.strip()
+        data = json.loads(text)
+        if isinstance(data, dict):
+            return data
+        if isinstance(data, list):
+            return {"steps": data}
+    except Exception:
+        pass
+
+    # Fallback: extract the largest JSON object substring
+    try:
+        start = content.find("{")
+        end = content.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            snippet = content[start : end + 1]
+            data = json.loads(snippet)
+            if isinstance(data, dict):
+                return data
+        # Also try list brackets
+        start = content.find("[")
+        end = content.rfind("]")
+        if start != -1 and end != -1 and end > start:
+            snippet = content[start : end + 1]
+            data = json.loads(snippet)
+            if isinstance(data, list):
+                return {"steps": data}
+    except Exception:
+        pass
+
+    # Last resort: handle multiple JSON objects concatenated; parse and merge
+    try:
+        merged: Dict[str, Any] = {}
+        # Normalize adjacent objects like '}{' to parse separately
+        normalized = re.sub(r"}\s*{", "}\n{", content.strip())
+        for part in re.split(r"\n+", normalized):
+            p = part.strip()
+            if not p:
+                continue
+            try:
+                obj = json.loads(p)
+                if isinstance(obj, dict):
+                    merged.update(obj)
+                elif isinstance(obj, list):
+                    merged.update({"steps": obj})
+            except Exception:
+                continue
+        if merged:
+            return merged
+    except Exception:
+        pass
+
+        return {}
 
 async def llm_planner(master_question: str, graph: CapabilityGraph, model: str) -> Plan:
     logger = logging.getLogger("orchestrator")
@@ -361,29 +641,50 @@ async def llm_planner(master_question: str, graph: CapabilityGraph, model: str) 
         "Return ONLY JSON with a 'steps' array. Each step has: id, tool_key, intent, args_hint (object), depends_on (array of ids). "
         "Use correct tool directionality. If translating from English to another language, use translate.translate_from_english with target_language ISO code. "
         "Language codes: tamil=ta, spanish=es, french=fr, german=de, hindi=hi, chinese=zh, japanese=ja, korean=ko, arabic=ar, russian=ru, portuguese=pt, italian=it. "
-        "Prefer sequential dependencies where later steps need outputs from earlier steps. Keep steps minimal."
+        "Prefer sequential dependencies where later steps need outputs from earlier steps. Keep steps minimal. "
+        "Routing rule: If the question mentions TikTok (tiktok, tik tok), you MUST select a tiktok.* tool (not translate.*)."
     )
     user = (
         f"Master question: {master_question}\n\n"
         f"Available tools:\n{catalog}\n\n"
         "Plan now."
     )
-    resp = client.chat.completions.create(
-        model=model,
-        messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-        temperature=0,
-        response_format={"type": "json_object"},
-    )
+    # resp = client.chat.completions.create(
+    #     model=model,
+    #     messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+    #     temperature=0,
+    #     response_format={"type": "json_object"},
+    # )
+    resp = deepseek_api_call(system, user)
     plan_json: Dict[str, Any]
     try:
-        plan_json = json.loads(resp.choices[0].message.content or "{}")
+        # plan_json = json.loads(resp.choices[0].message.content or "{}")
+        content = resp["choices"][0]["message"]["content"]
+        print('llm planner Content: ', content , type(content))
+        plan_json = safe_load_plan(content)
     except Exception:
         logger.exception("planner LLM returned invalid JSON; falling back to simple planner")
         return simple_planner(master_question, graph)
     steps_in: List[Dict[str, Any]] = list(plan_json.get("steps", []))
     steps: List[PlanStep] = []
+    # Known alias mappings from LLM outputs to actual tool keys in our graph
+    alias_map: Dict[str, str] = {
+        "tiktok.search_videos": "tiktok.tiktok_search",
+        "tiktok.get_post_details": "tiktok.tiktok_get_post_details",
+        "tiktok.get_subtitle": "tiktok.tiktok_get_subtitle",
+    }
     for idx, s in enumerate(steps_in, start=1):
         tool_key = str(s.get("tool_key", "")).strip()
+        # Normalize aliases
+        tool_key = alias_map.get(tool_key, tool_key)
+        # If TikTok tool_key not found, try resolve by suffix across any TikTok-like server key
+        if tool_key not in graph.tools and ".tiktok_" in tool_key:
+            suffix = tool_key.split(".", 1)[1]
+            for k in graph.tools.keys():
+                sk, tn = k.split(".", 1)
+                if tn == suffix and ("tiktok" in sk.lower()):
+                    tool_key = k
+                    break
         if tool_key not in graph.tools:
             # Skip invalid tools
             logger.warning("planner proposed unknown tool: %s", tool_key)
@@ -419,8 +720,33 @@ async def generate_tool_args_with_llm(
     logger = logging.getLogger("orchestrator")
     # Prompt LLM to produce a JSON object with only the needed arguments.
     schema_lines = [f"- {k}: {v}" for k, v in spec.schema.parameters.items()]
+
+    # If the tool requires no arguments, return an empty object immediately
+    if not spec.schema.parameters:
+        logger.info("%s.%s requires no arguments; returning {}", spec.server_key, spec.tool_name)
+        return {}
+
+    # Enrich schema hints for tools that accept a single 'arguments' dict with inner required keys
+    if spec.server_key == "youtube":
+        youtube_arg_hints: Dict[str, str] = {
+            "search_videos": "arguments: object { query: string }",
+            "upload_video": "arguments: object { file: string (path to video), title: string, description?: string, tags?: array[string], categoryId?: string, privacyStatus?: string }",
+            "add_comment": "arguments: object { video_id: string, text: string }",
+            "reply_comment": "arguments: object { comment_id: string, text: string }",
+            "get_video_comments": "arguments: object { video_id: string, max_results?: integer }",
+            "rate_video": "arguments: object { video_id: string, rating: string (like|dislike|none) }",
+            "video_analytics": "arguments: object { video_id: string }",
+            "remove_video": "arguments: object { video_id: string }",
+        }
+        hint = youtube_arg_hints.get(spec.tool_name)
+        if hint:
+            schema_lines = [f"- {hint}"]
+
     system = (
         "You are a tool argument generator. Produce ONLY a JSON object with the exact argument keys required. "
+        "If the tool signature includes 'arguments: dict/object', then return an 'arguments' JSON object containing ONLY the required inner fields. "
+        "Do NOT include optional fields unless they are explicitly specified in the master question or sub-intent. "
+        "If the tool requires no arguments, return an empty JSON object: {}. "
         "When tool is translate.translate_from_english, use ISO codes (e.g., 'ta' for Tamil) for target_language."
     )
     user = (
@@ -429,15 +755,24 @@ async def generate_tool_args_with_llm(
         f"Target tool: {spec.server_key}.{spec.tool_name}\n"
         f"Arguments schema:\n" + "\n".join(schema_lines)
     )
-    resp = client.chat.completions.create(
-        model=model,
-        messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-        temperature=0,
-        response_format={"type": "json_object"},
-    )
+    print('user: ', user, type(user))
+    # resp = client.chat.completions.create(
+    #     model=model,
+    #     messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+    #     temperature=0,
+    #     response_format={"type": "json_object"},
+    # )
+    # print('openai resp: ', resp, type(resp))
+    resp = deepseek_api_call(system, user)
+
     try:
         logger.info("generated args for %s.%s", spec.server_key, spec.tool_name)
-        return json.loads(resp.choices[0].message.content or "{}")
+        content = resp["choices"][0]["message"]["content"]
+        print('generate_tool_args_with_llm Content: ', content , type(content))
+        parsed = safe_load_plan(content)
+        if isinstance(parsed, dict):
+            return parsed
+        return {}
     except Exception:
         logger.exception("failed to parse generated args for %s.%s", spec.server_key, spec.tool_name)
         return {}
@@ -446,9 +781,9 @@ async def generate_tool_args_with_llm(
 # ---------- Orchestrator ----------
 
 
-async def _call_tool(server_key: str, script_path: str, tool_name: str, args: Dict[str, Any]) -> str:
+async def _call_tool(server_key: str, server: ServerSpec, tool_name: str, args: Dict[str, Any]) -> str:
     logger = logging.getLogger("orchestrator")
-    server_params = StdioServerParameters(command=sys.executable, args=[script_path], env=None)
+    server_params = StdioServerParameters(command=server.command, args=server.args, env=server.env)
     async with stdio_client(server_params) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
@@ -488,15 +823,80 @@ async def orchestrate(
         spec = graph.tools[step.tool_key]
         # Generate args
         args = await generate_tool_args_with_llm(client, llm_model, master_question, step, spec)
+        print('run_step args: ', args, type(args))
         # Simple dep interpolation: replace ${STEP_X_OUTPUT}
+        # Normalize string or object-like returns into dict
+        try:
+            if isinstance(args, str):
+                args = safe_load_plan(args) or {}
+            args = args.arguments if hasattr(args, "arguments") else args
+            if not isinstance(args, dict):
+                args = {}
+        except Exception as exc:
+            logger.error("failed to parse args for step %s: %s", step.id, exc)
+            args = {}
+        
         for k, v in list(args.items()):
             if isinstance(v, str) and "${STEP_" in v:
                 for sid, out_val in results.items():
                     placeholder = f"${{{sid}_OUTPUT}}"
                     if placeholder in v:
                         args[k] = v.replace(placeholder, str(out_val))
-        # Merge with any planner hints (hints override LLM-generated args)
-        args.update(step.args_hint)
+        # Merge with any planner hints without overwriting LLM-generated args
+        if isinstance(step.args_hint, dict):
+            for hk, hv in step.args_hint.items():
+                if hk == "arguments" and isinstance(hv, dict):
+                    existing = args.get("arguments")
+                    if not isinstance(existing, dict):
+                        args["arguments"] = dict(hv)
+                    else:
+                        for ak, av in hv.items():
+                            if ak not in existing:
+                                existing[ak] = av
+                else:
+                    if hk not in args:
+                        args[hk] = hv
+
+        # Flatten nested 'arguments' dict when spec expects top-level params (e.g., TikTok tools)
+        if isinstance(args.get("arguments"), dict):
+            nested = args["arguments"]
+            if isinstance(nested, dict):
+                for expected_key in spec.schema.parameters.keys():
+                    if expected_key not in args and expected_key in nested:
+                        args[expected_key] = nested[expected_key]
+                # Remove nested after flattening to avoid confusion
+                args.pop("arguments", None)
+
+        # As a final fallback, fill any missing expected keys from step hints (top-level or inside 'arguments')
+        if isinstance(step.args_hint, dict):
+            hint_args = step.args_hint
+            hint_nested = hint_args.get("arguments") if isinstance(hint_args.get("arguments"), dict) else {}
+            for expected_key in spec.schema.parameters.keys():
+                if expected_key not in args:
+                    if expected_key in hint_args:
+                        args[expected_key] = hint_args[expected_key]
+                    elif expected_key in hint_nested:
+                        args[expected_key] = hint_nested[expected_key]
+
+        # Special-case fallback: ensure X post text is populated under the correct key
+        if spec.server_key == "x" and spec.tool_name == "create_post":
+            text_val = ""
+            if isinstance(args.get("arguments"), dict):
+                text_val = str(args["arguments"].get("a", args["arguments"].get("text", ""))).strip()
+            if not text_val:
+                text_val = str(args.get("a", args.get("text", ""))).strip()
+            if not text_val:
+                # Try to infer from the master question
+                m = re.search(r"(?i)post\s+(.+)$", master_question.strip())
+                if m:
+                    text_val = m.group(1).strip()
+                if not text_val:
+                    text_val = re.sub(r"(?i)^\s*create\s+(a\s+)?(twitter|x)\s+post\s*", "", master_question).strip()
+            if text_val:
+                # Normalize to expected param name 'a' and drop nested forms
+                args["a"] = text_val
+                if isinstance(args.get("arguments"), dict):
+                    args.pop("arguments", None)
 
         # Retries + timeout + guardrails for args
         attempt = 0
@@ -521,13 +921,39 @@ async def orchestrate(
                             else:
                                 s = str(val).strip().lower()
                                 cleaned_args[key] = s in {"true", "1", "yes", "y"}
+                        elif t in ("dict", "object", "map", "json"):
+                            # Preserve dictionaries as-is; attempt to parse JSON strings
+                            if isinstance(val, dict):
+                                cleaned_args[key] = val
+                            else:
+                                try:
+                                    parsed = json.loads(val)
+                                    if isinstance(parsed, dict):
+                                        cleaned_args[key] = parsed
+                                    else:
+                                        # Fallback: pass through original value
+                                        cleaned_args[key] = val
+                                except Exception:
+                                    cleaned_args[key] = val
                         else:
                             cleaned_args[key] = str(val)
                     except Exception:
                         logger.warning("dropping invalid arg %s=%r for tool %s (expected %s)", key, val, step.tool_key, expected)
                 logger.debug("final args for %s: %s", step.tool_key, cleaned_args)
+                # Prune empty optional fields inside nested 'arguments' dict for youtube-like tools
+                if spec.server_key == "youtube" and isinstance(cleaned_args.get("arguments"), dict):
+                    pruned: Dict[str, Any] = {}
+                    for k, v in cleaned_args["arguments"].items():
+                        if v is None:
+                            continue
+                        if isinstance(v, str) and v.strip() == "":
+                            continue
+                        if isinstance(v, (list, dict)) and not v:
+                            continue
+                        pruned[k] = v
+                    cleaned_args["arguments"] = pruned
                 return step.id, await asyncio.wait_for(
-                    _call_tool(spec.server_key, graph.servers[spec.server_key].script_path, spec.tool_name, cleaned_args),
+                    _call_tool(spec.server_key, graph.servers[spec.server_key], spec.tool_name, cleaned_args),
                     timeout=timeout_s,
                 )
             except Exception as exc:
@@ -544,7 +970,7 @@ async def orchestrate(
         if not ready:
             # Deadlock or missing deps; break
             break
-        logger.info("orchestrator running %d ready step(s) in parallel", len(ready))
+        logger.info("orchestrator running %d ready step(s) in parallel %s", len(ready) , ready)
         tasks = [asyncio.create_task(run_step(s)) for s in ready]
         for s in ready:
             pending.pop(s.id, None)
@@ -602,6 +1028,51 @@ async def answer_master_question(
     except Exception:
         logger.exception("LLM planner failed; using simple planner")
         plan = simple_planner(master_question, graph)
+
+    # Sanitize plan: remove explicit YouTube refresh steps (tools auto-refresh on 401)
+    try:
+        removed_ids = {s.id for s in plan.steps if s.tool_key == "youtube.refresh_token"}
+        if removed_ids:
+            logger.info("sanitizing plan: removing youtube.refresh_token steps %s", removed_ids)
+            kept_steps: List[PlanStep] = []
+            for s in plan.steps:
+                if s.id in removed_ids:
+                    continue
+                # Drop dependencies on removed steps
+                s.depends_on = [d for d in s.depends_on if d not in removed_ids]
+                kept_steps.append(s)
+            plan = Plan(steps=kept_steps)
+    except Exception:
+        logger.exception("failed to sanitize plan; continuing with original plan")
+
+    # If query mentions TikTok but plan contains no valid tiktok.* step, inject a tiktok search step and drop translate.*
+    try:
+        qlower = master_question.lower()
+        has_valid_tiktok = any(s.tool_key.startswith("tiktok.") and s.tool_key in graph.tools for s in plan.steps)
+        if any(k in qlower for k in ["tiktok", "tik tok"]) and not has_valid_tiktok:
+            logger.info("sanitizing plan: enforcing TikTok tool for TikTok query")
+            # Remove translate steps if present
+            plan = Plan(steps=[s for s in plan.steps if not s.tool_key.startswith("translate.")])
+            # Prefer search as generic default; find available tiktok_search tool
+            search_key = None
+            if "tiktok.tiktok_search" in graph.tools:
+                search_key = "tiktok.tiktok_search"
+            else:
+                for k in graph.tools.keys():
+                    sk, tn = k.split(".", 1)
+                    if tn == "tiktok_search" and ("tiktok" in sk.lower()):
+                        search_key = k
+                        break
+            if search_key:
+                plan.steps.insert(0, PlanStep(
+                    id="step_1",
+                    intent=f"search tiktok for {master_question}",
+                    tool_key=search_key,
+                    args_hint={"query": master_question},
+                    depends_on=[],
+                ))
+    except Exception:
+        logger.exception("failed to enforce TikTok tool; continuing with original plan")
     # If translation target language is linguistically mentioned, enforce correct tool and args
     qlower = master_question.lower()
     lang_map = {"tamil": "ta", "spanish": "es", "french": "fr", "german": "de", "hindi": "hi", "chinese": "zh", "japanese": "ja", "korean": "ko", "arabic": "ar", "russian": "ru", "portuguese": "pt", "italian": "it"}

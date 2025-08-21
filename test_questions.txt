@@ -1,0 +1,47 @@
+Show me all videos uploaded on my YouTube channel.
+
+List the latest 10 videos on my channel.
+
+Search for a video on my channel with the keyword "tutorial".
+
+Find my first uploaded video.
+
+Which videos were published in the last 30 days?
+
+Upload a video located at C:/videos/demo.mp4 with title "Demo Upload".
+
+Upload a private video titled "Team Meeting Recording" with description "Confidential".
+
+Upload a video with tags ["python", "api", "tutorial"].
+
+Post a comment saying "Great video!" on video ID <video_id>.
+
+Reply "Thanks for watching!" to comment ID <comment_id>.
+
+Fetch the top 20 comments for video <video_id>.
+
+Add a comment "Subscribing for more content!" on my latest upload.
+
+Like the video with ID <video_id>.
+
+Dislike the video with ID <video_id>.
+
+Remove my rating from video <video_id>.
+
+Get statistics for video <video_id>.
+
+Show me how many views and likes my video <video_id> has.
+
+What is the total number of subscribers and views for my channel?
+
+Fetch channel analytics for my channel.
+
+Delete the video with ID <video_id>.
+
+Remove my most recent uploaded video.
+
+Refresh my YouTube access token.
+
+Retry listing videos after refreshing the token.
+
+Test what happens if the token is expired.
