@@ -7,12 +7,12 @@ ENV_PATH = os.path.join(os.path.dirname(__file__), ".env")
 print(ENV_PATH)
 load_dotenv(ENV_PATH)
 
-TOKEN=os.getenv("TOKEN")
-BASE_URL=os.getenv("BASE_URL") or "https://api.twitter.com"
+TOKEN=os.getenv("X_TOKEN")
+BASE_URL=os.getenv("X_BASE_URL") or "https://api.twitter.com"
 API_VERSION = "2"
-CLIENT_ID=os.getenv("CLIENT_ID")
-CLIENT_SECRET=os.getenv("CLIENT_SECRET")
-REFRESH_TOKEN=os.getenv("REFRESH_TOKEN")
+CLIENT_ID=os.getenv("X_CLIENT_ID")
+CLIENT_SECRET=os.getenv("X_CLIENT_SECRET")
+REFRESH_TOKEN=os.getenv("X_REFRESH_TOKEN")
 print(TOKEN)
 
 def _url(path):

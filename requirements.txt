@@ -6,3 +6,17 @@ language-tool-python>=2.7.1
 deep-translator>=1.11.4
 wikipedia>=1.4.0
 
+# Telegram Bridge dependencies
+telethon
+cryptg
+python-dotenv
+requests
+sqlalchemy
+pydantic
+fastapi
+uvicorn
+langchain-openai
+# MCP Server dependencies
+mcp-use
+fastmcp
+python-dateutil

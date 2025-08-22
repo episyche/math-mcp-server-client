@@ -10,9 +10,15 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
+from dotenv import load_dotenv, set_key
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+# Path to .env file
+ENV_PATH = os.path.join(os.path.dirname(__file__), ".env")
+
+# Load environment variables at startup
+load_dotenv(ENV_PATH)
 # ---------- Data model: Capability Graph ----------
 
 
@@ -208,6 +214,34 @@ DEFAULT_CAPABILITIES: Dict[str, List[ToolSchema]] = {
         ToolSchema("unlike_post", parameters={"a": "string", "b": "string"}),
         ToolSchema("get_liked_post_of_user", parameters={"a": "string"}),
         ToolSchema("recent_post_count_by_query", parameters={"a": "string"}),
+    ],
+    "telegram": [
+        ToolSchema("search_contacts", parameters={"query": "string"}),
+        ToolSchema("get_all_contacts", parameters={"limit": "integer", "page": "integer"}),
+        ToolSchema("list_messages", parameters={
+            "date_range": "tuple[string,string]",
+            "sender_id": "integer",
+            "chat_id": "integer",
+            "query": "string",
+            "limit": "integer",
+            "page": "integer",
+            "include_context": "boolean",
+            "context_before": "integer",
+            "context_after": "integer",
+        }),
+        ToolSchema("list_chats", parameters={
+            "query": "string",
+            "limit": "integer",
+            "page": "integer",
+            "chat_type": "string",
+            "sort_by": "string",
+        }),
+        ToolSchema("get_chat", parameters={"chat_id": "integer"}),
+        ToolSchema("get_direct_chat_by_contact", parameters={"contact_id": "integer"}),
+        ToolSchema("get_contact_chats", parameters={"contact_id": "integer", "limit": "integer", "page": "integer"}),
+        ToolSchema("get_last_interaction", parameters={"contact_id": "integer"}),
+        ToolSchema("get_message_context", parameters={"chat_id": "integer", "message_id": "integer", "before": "integer", "after": "integer"}),
+        ToolSchema("send_message", parameters={"recipient": "string", "message": "string"}),
     ],
 }
 
@@ -515,7 +549,6 @@ def _tools_catalog_for_prompt(graph: CapabilityGraph) -> str:
     return "\n".join(lines)
 
 def deepseek_api_call(system_prompt, user_prompt):
-    
     url = "http://52.20.185.4:8006/v1/chat/completions"
 
     payload = {
@@ -540,9 +573,8 @@ def deepseek_api_call(system_prompt, user_prompt):
     }
 
     response = requests.post(url, headers=headers, data=json.dumps(payload))
-    print('deepseek resp ---------- ',response , response.text)
+    logging.getLogger("orchestrator").debug("deepseek resp status=%s", getattr(response, "status_code", None))
     response = response.json()
-    
     return response
 
 def safe_load_plan(content: str) -> Dict[str, Any]:
@@ -660,7 +692,7 @@ async def llm_planner(master_question: str, graph: CapabilityGraph, model: str) 
     try:
         # plan_json = json.loads(resp.choices[0].message.content or "{}")
         content = resp["choices"][0]["message"]["content"]
-        print('llm planner Content: ', content , type(content))
+        logger.debug("llm planner content type=%s", type(content))
         plan_json = safe_load_plan(content)
     except Exception:
         logger.exception("planner LLM returned invalid JSON; falling back to simple planner")
@@ -755,7 +787,7 @@ async def generate_tool_args_with_llm(
         f"Target tool: {spec.server_key}.{spec.tool_name}\n"
         f"Arguments schema:\n" + "\n".join(schema_lines)
     )
-    print('user: ', user, type(user))
+    logging.getLogger("orchestrator").debug("arggen user prompt built for %s.%s", spec.server_key, spec.tool_name)
     # resp = client.chat.completions.create(
     #     model=model,
     #     messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
@@ -768,7 +800,7 @@ async def generate_tool_args_with_llm(
     try:
         logger.info("generated args for %s.%s", spec.server_key, spec.tool_name)
         content = resp["choices"][0]["message"]["content"]
-        print('generate_tool_args_with_llm Content: ', content , type(content))
+        logging.getLogger("orchestrator").debug("arggen model content received for %s.%s", spec.server_key, spec.tool_name)
         parsed = safe_load_plan(content)
         if isinstance(parsed, dict):
             return parsed
@@ -823,7 +855,7 @@ async def orchestrate(
         spec = graph.tools[step.tool_key]
         # Generate args
         args = await generate_tool_args_with_llm(client, llm_model, master_question, step, spec)
-        print('run_step args: ', args, type(args))
+        logger.debug("run_step parsed args for %s: %s", step.tool_key, args)
         # Simple dep interpolation: replace ${STEP_X_OUTPUT}
         # Normalize string or object-like returns into dict
         try:
