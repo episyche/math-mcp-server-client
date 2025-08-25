@@ -131,7 +131,7 @@ def list_videos():
                     or snippet.get("publishedAt", ""),
                 }
             )
-        return videos
+        return videos  
 
     videos = call_youtube_api(fetch_videos)
     return CallToolResult(
@@ -144,12 +144,14 @@ def list_videos():
 )
 
 @mcp.tool()
-def search_videos(query: str = "my first"):
+def search_videos(arguments: dict):
     """
     Search videos in your channel.
-    Parameters:
+    arguments dict must contain:
         - query: search text
     """
+
+    query = arguments.get("query", "my first")
     token = get_access_token()
     if not token:
         return CallToolResult(
@@ -197,10 +199,10 @@ def search_videos(query: str = "my first"):
 
 
 @mcp.tool()
-def upload_video(file: str, title: str, description: str = "", tags: list = None, categoryId: str = "22", privacyStatus: str = "public"):
+def upload_video(arguments: dict):
     """
     Upload a video to YouTube.
-    Parameters:
+    arguments dict must contain:
         - file: path to video
         - title: video title
         - description (optional)
@@ -208,11 +210,13 @@ def upload_video(file: str, title: str, description: str = "", tags: list = None
         - categoryId (optional)
         - privacyStatus (optional)
     """
-    if tags is None:
-        tags = ["api", "youtube", "upload"]
-    
-    logger.info("Upload video called with file=%s, title=%s, description=%s, tags=%s, categoryId=%s, privacyStatus=%s", 
-                file, title, description, tags, categoryId, privacyStatus)
+    logger.info("Upload video called with arguments: %s", arguments)
+    file = arguments.get("file")
+    title = arguments.get("title")
+    description = arguments.get("description", "")
+    tags = arguments.get("tags", ["api", "youtube", "upload"])
+    categoryId = arguments.get("categoryId", "22")
+    privacyStatus = arguments.get("privacyStatus", "public")
 
     if not file or not title:
         return CallToolResult(
@@ -255,13 +259,16 @@ def upload_video(file: str, title: str, description: str = "", tags: list = None
         )
 
 @mcp.tool()
-def add_comment(video_id: str, text: str):
+def add_comment(arguments: dict):
     """
     Post a top-level comment to a YouTube video.
-    Parameters:
+    arguments dict must contain:
         - video_id: ID of the video
         - text: comment text
     """
+
+    video_id = arguments.get("video_id")
+    text = arguments.get("text")
 
     if not video_id or not text:
         return CallToolResult(
@@ -303,7 +310,10 @@ def add_comment(video_id: str, text: str):
         )
 
 @mcp.tool()
-def reply_comment(comment_id: str, text: str):
+def reply_comment(arguments: dict):
+
+    comment_id = arguments.get("comment_id")
+    text = arguments.get("text")
 
     if not comment_id or not text:
         return CallToolResult(
@@ -342,13 +352,16 @@ def reply_comment(comment_id: str, text: str):
             content=[TextContent(type="text", text=f"❌ Reply failed: {e.response.text}")])
 
 @mcp.tool()
-def get_video_comments(video_id: str, max_results: int = 100):
+def get_video_comments(arguments: dict):
     """
     Fetch top-level comments for a YouTube video.
-    Parameters:
+    Arguments:
         - video_id: ID of the YouTube video
         - max_results: (optional) number of comments to fetch, default 100
     """
+
+    video_id = arguments.get("video_id")
+    max_results = arguments.get("max_results", 100)
 
     if not video_id:
         return CallToolResult(
@@ -387,13 +400,15 @@ def get_video_comments(video_id: str, max_results: int = 100):
         )
 
 @mcp.tool()
-def rate_video(video_id: str, rating: str = "like"):
+def rate_video(arguments: dict):
     """
     Rate a YouTube video via API.
-    Parameters:
-        - video_id: ID of the video
-        - rating: like|dislike|none
+    Args:
+        arguments: {"video_id": "<id>", "rating": "like|dislike|none"}
     """
+
+    video_id = arguments.get("video_id")
+    rating = arguments.get("rating", "like")
 
     def rate_video_api(token):
         url = f"https://www.googleapis.com/youtube/v3/videos/rate?id={video_id}&rating={rating}"
@@ -415,13 +430,12 @@ def rate_video(video_id: str, rating: str = "like"):
         )
 
 @mcp.tool()
-def video_analytics(video_id: str):
+def video_analytics(arguments: dict):
     """
     Fetch YouTube video analytics for a given video ID.
     Returns statistics like view count, like count, comment count, etc.
-    Parameters:
-        - video_id: ID of the video
     """
+    video_id = arguments.get("video_id")
     if not video_id:
         return CallToolResult(
             content=[TextContent(type="text", text="❌ Missing 'video_id' argument")]
@@ -501,12 +515,13 @@ def channel_analytics(channel_id: str = None):
     return CallToolResult(content=[TextContent(type="text", text=json.dumps(stats, indent=2, ensure_ascii=False))])
 
 @mcp.tool()
-def remove_video(video_id: str):
+def remove_video(arguments: dict):
     """
     MCP tool to remove a YouTube video.
-    Parameters:
+    Required argument:
         - video_id: ID of the video to delete
     """
+    video_id = arguments.get("video_id")
     if not video_id:
         return CallToolResult(
             content=[TextContent(type="text", text=":x: Missing 'video_id' argument")]
@@ -539,6 +554,5 @@ def remove_video(video_id: str):
 if __name__ == "__main__":
     # Uses stdio transport by default when launched by an MCP-capable client
     mcp.run()
-
 
 

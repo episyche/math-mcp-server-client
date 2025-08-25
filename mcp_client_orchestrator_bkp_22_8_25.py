@@ -36,6 +36,7 @@ async def main() -> None:
         except Exception:
             # Fallback: return original text if LLM call fails
             return text
+
     parser = argparse.ArgumentParser(description="MCP Orchestrator Client")
     parser.add_argument("--question", "-q", nargs="+", help="Master question to answer", required=True)
     parser.add_argument("--model", "-m", default=os.getenv("OPENAI_MODEL", "gpt-4o-mini"), help="LLM model for planning/args")
@@ -50,12 +51,13 @@ async def main() -> None:
         logger.debug("server %s -> %s", key, path)
     logger.debug("starting orchestrated answer generation")
     result = await answer_master_question(qtext, server_scripts, llm_model=args.model)
-    logger.debug("orchestration complete; printing result", result)
+    logger.debug("orchestration complete; printing result")
+    #print(result)
     print(humanize_with_openai(result, args.model))
+    #result = humanize_with_openai(result, args.model)
 
 
 if __name__ == "__main__":
     asyncio.run(main())
-
 
 

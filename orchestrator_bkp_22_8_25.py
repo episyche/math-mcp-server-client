@@ -185,15 +185,15 @@ DEFAULT_CAPABILITIES: Dict[str, List[ToolSchema]] = {
      "youtube": [
         ToolSchema("refresh_token", parameters={}),
         ToolSchema("list_videos", parameters={}),
-        ToolSchema("search_videos", parameters={"query": "string"}),
-        ToolSchema("upload_video", parameters={"file": "string", "title": "string", "description": "string", "tags": "list", "categoryId": "string", "privacyStatus": "string"}),
-        ToolSchema("add_comment", parameters={"video_id": "string", "text": "string"}),
-        ToolSchema("reply_comment", parameters={"comment_id": "string", "text": "string"}),
-        ToolSchema("get_video_comments", parameters={"video_id": "string", "max_results": "integer"}),
-        ToolSchema("rate_video", parameters={"video_id": "string", "rating": "string"}),
-        ToolSchema("video_analytics", parameters={"video_id": "string"}),
+        ToolSchema("search_videos", parameters={"arguments": "dict"}),
+        ToolSchema("upload_video", parameters={"arguments": "dict"}),
+        ToolSchema("add_comment", parameters={"arguments": "dict"}),
+        ToolSchema("reply_comment", parameters={"arguments": "dict"}),
+        ToolSchema("get_video_comments", parameters={"arguments": "dict"}),
+        ToolSchema("rate_video", parameters={"arguments": "dict"}),
+        ToolSchema("video_analytics", parameters={"arguments": "dict"}),
         ToolSchema("channel_analytics", parameters={"channel_id": "string"}),
-        ToolSchema("remove_video", parameters={"video_id": "string"}),
+        ToolSchema("remove_video", parameters={"arguments": "dict"}),
     ],
     "tiktok": [
         ToolSchema("tiktok_get_subtitle", parameters={"tiktok_url": "string", "language_code": "string"}),
@@ -214,14 +214,6 @@ DEFAULT_CAPABILITIES: Dict[str, List[ToolSchema]] = {
         ToolSchema("unlike_post", parameters={"a": "string", "b": "string"}),
         ToolSchema("get_liked_post_of_user", parameters={"a": "string"}),
         ToolSchema("recent_post_count_by_query", parameters={"a": "string"}),
-    ],
-    "google_ads": [
-        ToolSchema("create_customer", parameters={"a": "string"}),
-        ToolSchema("add_campaign", parameters={"a": "string"}),
-        ToolSchema("remove_campaign", parameters={"a": "string", "b": "string"}),
-        ToolSchema("get_campaign", parameters={"a": "string"}),
-        ToolSchema("add_ad_group", parameters={"a": "string", "b": "string"}),
-        ToolSchema("update_campaign", parameters={"a": "string", "b": "string", "c": "string"}),
     ],
     "telegram": [
         ToolSchema("search_contacts", parameters={"query": "string"}),
@@ -344,45 +336,6 @@ def simple_planner(master_question: str, graph: CapabilityGraph) -> Plan:
                 ))
                 logger.info("planner selected tool=%s for intent='%s'", key, master_question)
                 return
-    
-    # Priority heuristics for Google Ads - run these first to override LLM planner
-    if any(k in q for k in ["google ads", "googleads", "ads", "campaign", "ad group", "customer"]):
-        # Create campaign intent - when asking to create a campaign for an existing customer
-        if any(k in q for k in ["create campaign", "new campaign", "add campaign", "start campaign", "campaign for customer"]) and any(k in q for k in ["customer", "for customer"]):
-            customer_match = re.search(r"(?:for customer|customer)\s+(\d+)", master_question)
-            if customer_match:
-                args_hint = {"a": customer_match.group(1)}
-                key = "google_ads.add_campaign"
-                if key in graph.tools:
-                    chosen.append(PlanStep(
-                        id=f"step_{len(chosen)+1}",
-                        intent=f"create campaign for customer {customer_match.group(1)}",
-                        tool_key=key,
-                        args_hint=args_hint,
-                        depends_on=[],
-                    ))
-                    logger.info("planner selected google_ads.add_campaign via priority heuristic with args=%s", args_hint)
-                    return Plan(steps=chosen)
-        
-        # Create customer intent - only when explicitly asking to create a customer with a country name
-        if any(k in q for k in ["create customer", "new customer", "add customer", "customer account"]) and not any(k in q for k in ["campaign", "ad group"]):
-            # Check if the question contains a numeric customer ID - if so, don't create a customer
-            if re.search(r"\d{9,}", master_question):
-                pass  # Skip customer creation if we see a customer ID
-            else:
-                country_match = re.search(r"(?:for|in|account for)\s+([A-Za-z\s]+?)(?:\s|$)", master_question, re.IGNORECASE)
-                args_hint = {"a": country_match.group(1).strip() if country_match else "United States"}
-                key = "google_ads.create_customer"
-                if key in graph.tools:
-                    chosen.append(PlanStep(
-                        id=f"step_{len(chosen)+1}",
-                        intent=f"create customer account for {master_question}",
-                        tool_key=key,
-                        args_hint=args_hint,
-                        depends_on=[],
-                    ))
-                    logger.info("planner selected google_ads.create_customer via priority heuristic with args=%s", args_hint)
-                    return Plan(steps=chosen)
 
     # Examples: expand/replace to fit your domain
     # Heuristic integral parsing for args hints
@@ -485,7 +438,7 @@ def simple_planner(master_question: str, graph: CapabilityGraph) -> Plan:
             vid_match = re.search(r"([A-Za-z0-9_-]{8,})", master_question)
             args_hint = {}
             if vid_match:
-                args_hint = {"video_id": vid_match.group(1)}
+                args_hint = {"arguments": {"video_id": vid_match.group(1)}}
             key = "youtube.remove_video"
             if key in graph.tools:
                 chosen.append(PlanStep(
@@ -497,14 +450,16 @@ def simple_planner(master_question: str, graph: CapabilityGraph) -> Plan:
                 ))
                 logger.info("planner selected youtube.remove_video via heuristic with args=%s", args_hint)
         # Upload video intent (only if explicit upload or file path present)
-        elif ("upload" in q or re.search(r"[a-zA-Z]:\\[^\n\r]+?\.(mp4|mov|mkv|avi)", master_question) is not None):
+        elif ("upload" in q or re.search(r"[a-zA-Z]:\\\\[^\n\r]+?\.(mp4|mov|mkv|avi)", master_question) is not None):
             file_match = re.search(r"([a-zA-Z]:\\[^\n\r]+?\.(mp4|mov|mkv|avi))", master_question)
-            title_match = re.search(r"(?:named|title is|title)\s+\"?([^\"\n\r]+?)(?:\s+file\s+path|\s+in\s+youtube|$)", master_question, re.IGNORECASE)
+            title_match = re.search(r"(?:named|title is|title)\s+\"?([^\"\n\r]+)\"?", master_question, re.IGNORECASE)
             args_hint: Dict[str, Any] = {}
             if file_match:
-                args_hint["file"] = file_match.group(1)
+                args_hint["arguments"] = {"file": file_match.group(1)}
             if title_match:
-                args_hint["title"] = title_match.group(1).strip()
+                if "arguments" not in args_hint:
+                    args_hint["arguments"] = {}
+                args_hint["arguments"]["title"] = title_match.group(1).strip()
             key = "youtube.upload_video"
             if key in graph.tools:
                 chosen.append(PlanStep(
@@ -515,102 +470,6 @@ def simple_planner(master_question: str, graph: CapabilityGraph) -> Plan:
                     depends_on=[],
                 ))
                 logger.info("planner selected youtube.upload_video via heuristic with args=%s", args_hint)
-
-    # Heuristic for Google Ads actions
-    if not chosen and any(k in q for k in ["google ads", "googleads", "ads", "campaign", "ad group", "customer"]):
-        # Create customer intent - only when explicitly asking to create a customer with a country name
-        if any(k in q for k in ["create customer", "new customer", "add customer", "customer account"]) and not any(k in q for k in ["campaign", "ad group"]):
-            # Check if the question contains a numeric customer ID - if so, don't create a customer
-            if re.search(r"\d{9,}", master_question):
-                pass  # Skip customer creation if we see a customer ID
-            else:
-                country_match = re.search(r"(?:for|in|account for)\s+([A-Za-z\s]+?)(?:\s|$)", master_question, re.IGNORECASE)
-                args_hint = {"a": country_match.group(1).strip() if country_match else "United States"}
-                key = "google_ads.create_customer"
-                if key in graph.tools:
-                    chosen.append(PlanStep(
-                        id=f"step_{len(chosen)+1}",
-                        intent=f"create customer account for {master_question}",
-                        tool_key=key,
-                        args_hint=args_hint,
-                        depends_on=[],
-                    ))
-                    logger.info("planner selected google_ads.create_customer via heuristic with args=%s", args_hint)
-        # Create campaign intent - when asking to create a campaign for an existing customer
-        elif any(k in q for k in ["create campaign", "new campaign", "add campaign", "start campaign", "campaign for customer"]) and any(k in q for k in ["customer", "for customer"]):
-            customer_match = re.search(r"(?:for customer|customer)\s+(\d+)", master_question)
-            if customer_match:
-                args_hint = {"a": customer_match.group(1)}
-                key = "google_ads.add_campaign"
-                if key in graph.tools:
-                    chosen.append(PlanStep(
-                        id=f"step_{len(chosen)+1}",
-                        intent=f"create campaign for customer {customer_match.group(1)}",
-                        tool_key=key,
-                        args_hint=args_hint,
-                        depends_on=[],
-                    ))
-                    logger.info("planner selected google_ads.add_campaign via heuristic with args=%s", args_hint)
-        # Remove campaign intent
-        elif any(k in q for k in ["remove campaign", "delete campaign", "stop campaign", "end campaign"]):
-            customer_match = re.search(r"(?:from customer|customer)\s+(\d+)", master_question)
-            campaign_match = re.search(r"campaign[_\s](\d+)", master_question)
-            args_hint = {"a": customer_match.group(1) if customer_match else "123456789", "b": campaign_match.group(1) if campaign_match else "123456789"}
-            key = "google_ads.remove_campaign"
-            if key in graph.tools:
-                chosen.append(PlanStep(
-                    id=f"step_{len(chosen)+1}",
-                    intent=f"remove campaign for {master_question}",
-                    tool_key=key,
-                    args_hint=args_hint,
-                    depends_on=[],
-                ))
-                logger.info("planner selected google_ads.remove_campaign via heuristic with args=%s", args_hint)
-        # Get campaign details intent
-        elif any(k in q for k in ["show campaign", "get campaign", "campaign details", "list campaigns"]):
-            customer_match = re.search(r"(?:for customer|customer)\s+(\d+)", master_question)
-            args_hint = {"a": customer_match.group(1) if customer_match else "123456789"}
-            key = "google_ads.get_campaign"
-            if key in graph.tools:
-                chosen.append(PlanStep(
-                    id=f"step_{len(chosen)+1}",
-                    intent=f"get campaign details for {master_question}",
-                    tool_key=key,
-                    args_hint=args_hint,
-                    depends_on=[],
-                ))
-                logger.info("planner selected google_ads.get_campaign via heuristic with args=%s", args_hint)
-        # Add ad group intent
-        elif any(k in q for k in ["add ad group", "create ad group", "new ad group"]):
-            ad_group_match = re.search(r"(?:ad group|adgroup)\s+([A-Za-z\s]+?)(?:\s+to|\s+in)", master_question, re.IGNORECASE)
-            campaign_match = re.search(r"campaign[_\s](\d+)", master_question)
-            args_hint = {"a": ad_group_match.group(1).strip() if ad_group_match else "New Ad Group", "b": campaign_match.group(1) if campaign_match else "123456789"}
-            key = "google_ads.add_ad_group"
-            if key in graph.tools:
-                chosen.append(PlanStep(
-                    id=f"step_{len(chosen)+1}",
-                    intent=f"add ad group for {master_question}",
-                    tool_key=key,
-                    args_hint=args_hint,
-                    depends_on=[],
-                ))
-                logger.info("planner selected google_ads.add_ad_group via heuristic with args=%s", args_hint)
-        # Update campaign intent
-        elif any(k in q for k in ["update campaign", "modify campaign", "change campaign", "edit campaign"]):
-            campaign_match = re.search(r"campaign[_\s](\d+)", master_question)
-            field_match = re.search(r"(?:update|modify|change|edit)\s+(\w+)", master_question, re.IGNORECASE)
-            value_match = re.search(r"(?:to|as)\s+([A-Za-z0-9\s]+?)(?:\s|$)", master_question, re.IGNORECASE)
-            args_hint = {"a": campaign_match.group(1) if campaign_match else "123456789", "b": field_match.group(1) if field_match else "status", "c": value_match.group(1).strip() if value_match else "paused"}
-            key = "google_ads.update_campaign"
-            if key in graph.tools:
-                chosen.append(PlanStep(
-                    id=f"step_{len(chosen)+1}",
-                    intent=f"update campaign for {master_question}",
-                    tool_key=key,
-                    args_hint=args_hint,
-                    depends_on=[],
-                ))
-                logger.info("planner selected google_ads.update_campaign via heuristic with args=%s", args_hint)
 
     if not chosen:
         # Fallback: pick the first tool in the graph
@@ -902,35 +761,22 @@ async def generate_tool_args_with_llm(
     # Enrich schema hints for tools that accept a single 'arguments' dict with inner required keys
     if spec.server_key == "youtube":
         youtube_arg_hints: Dict[str, str] = {
-            "search_videos": "query: string",
-            "upload_video": "file: string (path to video), title: string, description?: string, tags?: array[string], categoryId?: string, privacyStatus?: string",
-            "add_comment": "video_id: string, text: string",
-            "reply_comment": "comment_id: string, text: string",
-            "get_video_comments": "video_id: string, max_results?: integer",
-            "rate_video": "video_id: string, rating: string (like|dislike|none)",
-            "video_analytics": "video_id: string",
-            "remove_video": "video_id: string",
+            "search_videos": "arguments: object { query: string }",
+            "upload_video": "arguments: object { file: string (path to video), title: string, description?: string, tags?: array[string], categoryId?: string, privacyStatus?: string }",
+            "add_comment": "arguments: object { video_id: string, text: string }",
+            "reply_comment": "arguments: object { comment_id: string, text: string }",
+            "get_video_comments": "arguments: object { video_id: string, max_results?: integer }",
+            "rate_video": "arguments: object { video_id: string, rating: string (like|dislike|none) }",
+            "video_analytics": "arguments: object { video_id: string }",
+            "remove_video": "arguments: object { video_id: string }",
         }
         hint = youtube_arg_hints.get(spec.tool_name)
-        if hint:
-            schema_lines = [f"- {hint}"]
-    
-    # Enrich schema hints for Google Ads tools
-    elif spec.server_key == "google_ads":
-        google_ads_arg_hints: Dict[str, str] = {
-            "create_customer": "a: string (country name only, e.g., 'United States', 'India', 'Germany' - do NOT include location objects or geoTargetConstants)",
-            "add_campaign": "a: string (customer ID only, e.g., '123456789')",
-            "remove_campaign": "a: string (customer ID only), b: string (campaign ID only, e.g., '123456789')",
-            "get_campaign": "a: string (customer ID only, e.g., '123456789')",
-            "add_ad_group": "a: string (ad group name only, e.g., 'Electronics Ad Group'), b: string (campaign ID only, e.g., '123456789')",
-            "update_campaign": "a: string (campaign ID only, e.g., '123456789'), b: string (field to update: 'status', 'name', or 'budget'), c: string (new value only, e.g., 'paused', 'Summer Sale 2024', '2000')",
-        }
-        hint = google_ads_arg_hints.get(spec.tool_name)
         if hint:
             schema_lines = [f"- {hint}"]
 
     system = (
         "You are a tool argument generator. Produce ONLY a JSON object with the exact argument keys required. "
+        "If the tool signature includes 'arguments: dict/object', then return an 'arguments' JSON object containing ONLY the required inner fields. "
         "Do NOT include optional fields unless they are explicitly specified in the master question or sub-intent. "
         "If the tool requires no arguments, return an empty JSON object: {}. "
         "When tool is translate.translate_from_english, use ISO codes (e.g., 'ta' for Tamil) for target_language."
@@ -1126,6 +972,18 @@ async def orchestrate(
                     except Exception:
                         logger.warning("dropping invalid arg %s=%r for tool %s (expected %s)", key, val, step.tool_key, expected)
                 logger.debug("final args for %s: %s", step.tool_key, cleaned_args)
+                # Prune empty optional fields inside nested 'arguments' dict for youtube-like tools
+                if spec.server_key == "youtube" and isinstance(cleaned_args.get("arguments"), dict):
+                    pruned: Dict[str, Any] = {}
+                    for k, v in cleaned_args["arguments"].items():
+                        if v is None:
+                            continue
+                        if isinstance(v, str) and v.strip() == "":
+                            continue
+                        if isinstance(v, (list, dict)) and not v:
+                            continue
+                        pruned[k] = v
+                    cleaned_args["arguments"] = pruned
                 return step.id, await asyncio.wait_for(
                     _call_tool(spec.server_key, graph.servers[spec.server_key], spec.tool_name, cleaned_args),
                     timeout=timeout_s,
@@ -1196,19 +1054,12 @@ async def answer_master_question(
     logger.info("building capability graph (static)")
     graph = build_capability_graph_static(server_scripts)
     logger.info("planning steps for question: %s", master_question)
-    
-    # Check for Google Ads operations first - use simple planner for these to avoid LLM confusion
-    q = master_question.lower()
-    if any(k in q for k in ["google ads", "googleads", "ads", "campaign", "ad group", "customer"]):
-        logger.info("Google Ads operation detected; using simple planner")
+    # Use LLM-based planner first; fall back to simple heuristic if needed
+    try:
+        plan = await llm_planner(master_question, graph, model=llm_model)
+    except Exception:
+        logger.exception("LLM planner failed; using simple planner")
         plan = simple_planner(master_question, graph)
-    else:
-        # Use LLM-based planner first; fall back to simple heuristic if needed
-        try:
-            plan = await llm_planner(master_question, graph, model=llm_model)
-        except Exception:
-            logger.exception("LLM planner failed; using simple planner")
-            plan = simple_planner(master_question, graph)
 
     # Sanitize plan: remove explicit YouTube refresh steps (tools auto-refresh on 401)
     try:
@@ -1279,6 +1130,5 @@ async def answer_master_question(
     logger.info("reflection phase (optional)")
     reflected = await reflect_and_fill(graph, master_question, results, llm_model=llm_model)
     return reflected.get("summary", "")
-
 
 

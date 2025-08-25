@@ -39,6 +39,7 @@ def get_available_server_scripts() -> dict[str, str]:
         "x": os.path.join(current_dir, "x", "x_mcp_server.py"),
         "tiktok": os.path.join(current_dir, "tiktok", "tiktok_mcp_server.py"),
         "telegram": os.path.join(current_dir, "telegram", "telegram_mcp_server.py"),
+        "google_ads": os.path.join(current_dir, "google_ads", "google_ads_mcp_server.py"),
     }
     # Prefer external Node TikTok server if provided via env, else use native Python server if present
     if tiktok_entry:
@@ -145,11 +146,13 @@ def llm_route_task(question: str, model: str | None = None) -> tuple[str | None,
         "- youtube: refresh_token(), list_videos(), search_videos(query), upload_video(file,title,description,tags,categoryId,privacyStatus), remove_video(video_id), add_comment(video_id,text), reply_comment(comment_id,text), get_video_comments(video_id,max_results), rate_video(video_id,rating), video_analytics(video_id), channel_analytics(channel_id)\n"
         "- x: create_post(text), delete_post(post_id), get_post_by_id(post_id), get_my_user_info(), get_all_post_of_user(user_id), get_user_by_username(username), follow_user(target_user_id,source_user_id), unfollow_user(target_user_id,source_user_id), recent_post_by_query(query), like_post(tweet_id,user_id), unlike_post(user_id,tweet_id), get_liked_post_of_user(user_id), recent_post_count_by_query(query)\n"
         "- telegram: search_contacts(query), get_all_contacts(limit,page), list_chats(query,limit,page,chat_type,sort_by), list_messages(chat_id,sender_id,query,limit,page,include_context,context_before,context_after), get_chat(chat_id), get_direct_chat_by_contact(contact_id), get_contact_chats(contact_id,limit,page), get_last_interaction(contact_id), get_message_context(chat_id,message_id,before,after), send_message(recipient,message)\n"
+        "- google_ads: create_customer(country), add_campaign(customer_id), remove_campaign(customer_id,campaign_id), get_campaign(customer_id), add_ad_group(ad_group_name,campaign_id), update_campaign(campaign_id,field,new_value)\n"
 
         "Routing rules: Return ONLY JSON with keys server, tool, arguments. "
         "If the question mentions X, Twitter, tweets, hashtags (#), mentions (@), or 'on X'/'on Twitter', route to server 'x' (never 'youtube'). "
         "If the question mentions YouTube, videos, channels, or playlists, route to server 'youtube'. "
         "If the question mentions Telegram, chats, messages, DM, or @user, route to server 'telegram'. "
+        "If the question mentions Google Ads, ads, campaigns, ad groups, customers, or 'in google ads', route to server 'google_ads'. "
         "Use numbers for numeric fields. Use strings for expressions/variables/bounds. "
         "Use JSON booleans for boolean fields (e.g., predator: true for predator, false for prey). "
         "Prefer Pythonic exponent '**' in expressions. If the query mentions 'from A to B', use definite integral with lower=A, upper=B."
@@ -317,6 +320,16 @@ def _normalize_arguments(server: str, tool: str, args: dict) -> dict:
             # pass-through for strings and others
             normalized[key] = value
         # date_range may be provided as two strings; keep as-is (bridge handles or ignores)
+        return normalized
+    if server == "google_ads":
+        # Google Ads tools expect simple string parameters
+        normalized = {}
+        for key, value in args.items():
+            # Ensure all values are strings and strip any complex objects
+            if isinstance(value, str):
+                normalized[key] = value.strip()
+            else:
+                normalized[key] = str(value).strip()
         return normalized
     return args
 
