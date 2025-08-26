@@ -223,6 +223,13 @@ DEFAULT_CAPABILITIES: Dict[str, List[ToolSchema]] = {
         ToolSchema("add_ad_group", parameters={"a": "string", "b": "string"}),
         ToolSchema("update_campaign", parameters={"a": "string", "b": "string", "c": "string"}),
     ],
+    "shopify": [
+        ToolSchema("get_products", parameters={"limit": "integer", "status": "string", "vendor": "string", "product_type": "string", "tag": "string", "query": "string", "cursor": "string", "include_variants": "boolean", "include_images": "boolean", "include_inventory": "boolean"}),
+        ToolSchema("get_customers", parameters={"limit": "integer", "query": "string", "cursor": "string", "include_addresses": "boolean", "include_orders": "boolean"}),
+        ToolSchema("get_orders", parameters={"limit": "integer", "status": "string", "financial_status": "string", "fulfillment_status": "string", "created_at_min": "string", "created_at_max": "string", "query": "string", "cursor": "string"}),
+        ToolSchema("get_store_info", parameters={}),
+        ToolSchema("get_analytics", parameters={"metric": "string", "date_range": "string"}),
+    ],
     "telegram": [
         ToolSchema("search_contacts", parameters={"query": "string"}),
         ToolSchema("get_all_contacts", parameters={"limit": "integer", "page": "integer"}),
@@ -1199,9 +1206,16 @@ async def answer_master_question(
     
     # Check for Google Ads operations first - use simple planner for these to avoid LLM confusion
     q = master_question.lower()
-    if any(k in q for k in ["google ads", "googleads", "ads", "campaign", "ad group", "customer"]):
+    if any(k in q for k in ["google ads", "googleads", "ads", "campaign", "ad group"]) and not any(k in q for k in ["shopify", "store", "e-commerce"]):
         logger.info("Google Ads operation detected; using simple planner")
         plan = simple_planner(master_question, graph)
+    elif any(k in q for k in ["shopify", "store", "e-commerce", "products", "orders", "inventory"]) and not any(k in q for k in ["google ads", "googleads", "ads"]):
+        logger.info("Shopify operation detected; using LLM planner")
+        try:
+            plan = await llm_planner(master_question, graph, model=llm_model)
+        except Exception:
+            logger.exception("LLM planner failed; using simple planner")
+            plan = simple_planner(master_question, graph)
     else:
         # Use LLM-based planner first; fall back to simple heuristic if needed
         try:

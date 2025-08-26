@@ -40,6 +40,7 @@ def get_available_server_scripts() -> dict[str, str]:
         "tiktok": os.path.join(current_dir, "tiktok", "tiktok_mcp_server.py"),
         "telegram": os.path.join(current_dir, "telegram", "telegram_mcp_server.py"),
         "google_ads": os.path.join(current_dir, "google_ads", "google_ads_mcp_server.py"),
+        "shopify": os.path.join(current_dir, "shopify", "shopify_mcp_server.py"),
     }
     # Prefer external Node TikTok server if provided via env, else use native Python server if present
     if tiktok_entry:
@@ -147,12 +148,14 @@ def llm_route_task(question: str, model: str | None = None) -> tuple[str | None,
         "- x: create_post(text), delete_post(post_id), get_post_by_id(post_id), get_my_user_info(), get_all_post_of_user(user_id), get_user_by_username(username), follow_user(target_user_id,source_user_id), unfollow_user(target_user_id,source_user_id), recent_post_by_query(query), like_post(tweet_id,user_id), unlike_post(user_id,tweet_id), get_liked_post_of_user(user_id), recent_post_count_by_query(query)\n"
         "- telegram: search_contacts(query), get_all_contacts(limit,page), list_chats(query,limit,page,chat_type,sort_by), list_messages(chat_id,sender_id,query,limit,page,include_context,context_before,context_after), get_chat(chat_id), get_direct_chat_by_contact(contact_id), get_contact_chats(contact_id,limit,page), get_last_interaction(contact_id), get_message_context(chat_id,message_id,before,after), send_message(recipient,message)\n"
         "- google_ads: create_customer(country), add_campaign(customer_id), remove_campaign(customer_id,campaign_id), get_campaign(customer_id), add_ad_group(ad_group_name,campaign_id), update_campaign(campaign_id,field,new_value)\n"
+        "- shopify: get_products(limit,status,vendor,product_type,tag,query,cursor,include_variants,include_images,include_inventory), get_customers(limit,query,cursor,include_addresses,include_orders), get_orders(limit,status,financial_status,fulfillment_status,created_at_min,created_at_max,query,cursor), get_store_info(), get_analytics(metric,date_range)\n"
 
         "Routing rules: Return ONLY JSON with keys server, tool, arguments. "
         "If the question mentions X, Twitter, tweets, hashtags (#), mentions (@), or 'on X'/'on Twitter', route to server 'x' (never 'youtube'). "
         "If the question mentions YouTube, videos, channels, or playlists, route to server 'youtube'. "
         "If the question mentions Telegram, chats, messages, DM, or @user, route to server 'telegram'. "
         "If the question mentions Google Ads, ads, campaigns, ad groups, customers, or 'in google ads', route to server 'google_ads'. "
+        "If the question mentions Shopify, store, products, customers, orders, inventory, or e-commerce, route to server 'shopify'. "
         "Use numbers for numeric fields. Use strings for expressions/variables/bounds. "
         "Use JSON booleans for boolean fields (e.g., predator: true for predator, false for prey). "
         "Prefer Pythonic exponent '**' in expressions. If the query mentions 'from A to B', use definite integral with lower=A, upper=B."
@@ -330,6 +333,25 @@ def _normalize_arguments(server: str, tool: str, args: dict) -> dict:
                 normalized[key] = value.strip()
             else:
                 normalized[key] = str(value).strip()
+        return normalized
+    if server == "shopify":
+        # Shopify tools expect specific parameter types
+        normalized = {}
+        for key, value in args.items():
+            if key in ["limit", "include_variants", "include_images", "include_inventory", "include_addresses", "include_orders"]:
+                try:
+                    if isinstance(value, bool):
+                        normalized[key] = value
+                    else:
+                        s = str(value).strip().lower()
+                        normalized[key] = s in {"true", "1", "yes", "y"}
+                except Exception:
+                    normalized[key] = False
+            elif key == "location_ids" and isinstance(value, list):
+                normalized[key] = value
+            else:
+                # Convert to string for other parameters
+                normalized[key] = str(value).strip() if value is not None else ""
         return normalized
     return args
 
