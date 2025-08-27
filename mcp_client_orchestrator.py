@@ -51,6 +51,7 @@ async def main() -> None:
     logger.debug("starting orchestrated answer generation")
     result = await answer_master_question(qtext, server_scripts, llm_model=args.model)
     logger.debug("orchestration complete; printing result", result)
+    # print(result)
     print(humanize_with_openai(result, args.model))
 
 

@@ -1,0 +1,6 @@
+# Telegram MCP Server dependencies
+telethon
+python-dotenv
+mcp
+fastmcp
+python-dateutil

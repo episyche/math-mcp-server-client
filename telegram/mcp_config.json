@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "telegram": {
+      "command": "python",
+      "args": ["telegram_mcp_server.py"],
+      "cwd": ".",
+      "env": {
+        "PYTHONPATH": "."
+      }
+    }
+  }
+}
