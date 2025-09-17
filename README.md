@@ -1,1 +1,0 @@
-# math-mcp-server-client
