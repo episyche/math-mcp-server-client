@@ -13,6 +13,7 @@ import requests
 import argparse
 import uuid
 from typing import Dict, Any, Optional, List, Tuple
+from openai import OpenAI
 from contextlib import contextmanager
 import re
 
@@ -20,9 +21,268 @@ import re
 from dotenv import load_dotenv
 load_dotenv()
 
+# Initialize OpenAI client (optional)
+openai_api_key = os.getenv('OPENAI_API_KEY')
+openai_client = None
+if openai_api_key:
+    try:
+        openai_client = OpenAI(api_key=openai_api_key)
+    except Exception as e:
+        logger.warning(f"Failed to initialize OpenAI client: {e}")
+        openai_client = None
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Configure file logging for API mode
+def setup_file_logging():
+    """Setup file logging for API mode."""
+    log_file = os.path.join(os.path.dirname(__file__), 'mcp_orchestrator.log')
+    file_handler = logging.FileHandler(log_file, mode='a', encoding='utf-8')
+    file_handler.setLevel(logging.INFO)
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+    return file_handler
+
+def convert_to_human_readable(json_result: Dict[str, Any], question: str) -> str:
+    """Convert JSON result to human-readable format using OpenAI."""
+    if not openai_client:
+        # Fallback to simple text conversion when OpenAI is not available
+        return create_simple_human_readable(json_result, question)
+    
+    try:
+        # Create a prompt for OpenAI to convert the JSON to human-readable format
+        prompt = f"""
+Convert the following JSON response into a natural, human-readable format. 
+The user asked: "{question}"
+
+JSON Response:
+{json.dumps(json_result, indent=2)}
+
+Please provide a clear, conversational response that directly answers the user's question using the data from the JSON response. 
+Make it sound natural and helpful, as if you're explaining the results to a friend.
+"""
+        
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant that converts technical JSON responses into clear, human-readable explanations."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=1000,
+            temperature=0.7
+        )
+        
+        return response.choices[0].message.content.strip()
+        
+    except Exception as e:
+        logger.error(f"Error converting to human-readable format: {e}")
+        # Fallback to a simple text conversion
+        return create_simple_human_readable(json_result, question)
+
+def create_simple_human_readable(json_result: Dict[str, Any], question: str) -> str:
+    """Create a simple human-readable format without OpenAI."""
+    if not json_result.get("success", False):
+        error_msg = json_result.get("error", "Unknown error occurred")
+        return f"I encountered an issue while processing your request '{question}': {error_msg}"
+    
+    # Extract key information based on the action
+    action = json_result.get("action", "unknown")
+    result_data = json_result.get("result", {})
+    
+    if action == "search_videos":
+        query = json_result.get("query", question)
+        if "message" in result_data:
+            # This is likely TikTok search results - return only the message content
+            return result_data['message']
+        else:
+            # For other search results, format them nicely
+            if isinstance(result_data, dict) and "videos" in result_data:
+                videos = result_data.get("videos", [])
+                if videos:
+                    response = f"I found {len(videos)} videos for '{query}':\n\n"
+                    for i, video in enumerate(videos, 1):
+                        response += f"Video {i}:\n"
+                        response += f"Title: {video.get('title', 'N/A')}\n"
+                        response += f"Description: {video.get('description', 'N/A')}\n"
+                        response += f"Views: {video.get('views', 'N/A')}\n"
+                        response += f"Duration: {video.get('duration', 'N/A')}\n\n"
+                    return response
+                else:
+                    return f"No videos found for '{query}'"
+            else:
+                return f"I found some videos for '{query}': {json.dumps(result_data, indent=2)}"
+    
+    elif action == "list_videos":
+        if isinstance(result_data, dict) and "videos" in result_data:
+            videos = result_data.get("videos", [])
+            count = result_data.get("count", len(videos))
+            if videos:
+                response = f"You have {count} videos in your YouTube channel:\n\n"
+                for i, video in enumerate(videos, 1):
+                    response += f"Video {i}:\n"
+                    response += f"Title: {video.get('title', 'N/A')}\n"
+                    response += f"Description: {video.get('description', 'N/A')}\n"
+                    response += f"Views: {video.get('views', 'N/A')}\n"
+                    response += f"Duration: {video.get('duration', 'N/A')}\n"
+                    response += f"Published: {video.get('published_at', 'N/A')}\n\n"
+                return response
+            else:
+                return f"You have {count} videos in your YouTube channel, but no video details are available."
+        else:
+            return f"Here are your videos: {json.dumps(result_data, indent=2)}"
+    
+    elif action == "video_analytics":
+        video_id = json_result.get("video_id", "unknown")
+        if isinstance(result_data, dict):
+            response = f"Analytics for video {video_id}:\n\n"
+            for key, value in result_data.items():
+                response += f"{key.replace('_', ' ').title()}: {value}\n"
+            return response
+        else:
+            return f"Here are the analytics for video {video_id}: {json.dumps(result_data, indent=2)}"
+    
+    elif action == "channel_analytics":
+        if isinstance(result_data, dict):
+            response = "Your channel analytics:\n\n"
+            for key, value in result_data.items():
+                response += f"{key.replace('_', ' ').title()}: {value}\n"
+            return response
+        else:
+            return f"Here are your channel analytics: {json.dumps(result_data, indent=2)}"
+    
+    elif action == "get_my_user_info":
+        if isinstance(result_data, dict) and "data" in result_data:
+            user_data = result_data["data"]
+            response = "Your X (Twitter) profile information:\n\n"
+            response += f"Name: {user_data.get('name', 'N/A')}\n"
+            response += f"Username: @{user_data.get('username', 'N/A')}\n"
+            response += f"User ID: {user_data.get('id', 'N/A')}\n"
+            return response
+        else:
+            return f"Here is your X user information: {json.dumps(result_data, indent=2)}"
+    
+    elif action == "create_post":
+        if isinstance(result_data, dict) and "message" in result_data:
+            return result_data['message']
+        else:
+            return f"Post created successfully: {json.dumps(result_data, indent=2)}"
+    
+    elif action == "search_recent_tweets":
+        if isinstance(result_data, dict) and "message" in result_data:
+            return result_data['message']
+        else:
+            return f"Search results: {json.dumps(result_data, indent=2)}"
+    
+    elif action == "get_user_by_username":
+        if isinstance(result_data, dict) and "data" in result_data:
+            user_data = result_data["data"]
+            response = f"User profile for @{user_data.get('username', 'N/A')}:\n\n"
+            response += f"Name: {user_data.get('name', 'N/A')}\n"
+            response += f"Username: @{user_data.get('username', 'N/A')}\n"
+            response += f"User ID: {user_data.get('id', 'N/A')}\n"
+            return response
+        else:
+            return f"User information: {json.dumps(result_data, indent=2)}"
+    
+    # Facebook actions
+    elif action == "get_user_info":
+        if isinstance(result_data, dict) and "message" in result_data:
+            return result_data['message']
+        else:
+            return f"Facebook user information: {json.dumps(result_data, indent=2)}"
+    
+    elif action == "get_pages":
+        if isinstance(result_data, dict) and "message" in result_data:
+            return result_data['message']
+        else:
+            return f"Facebook pages: {json.dumps(result_data, indent=2)}"
+    
+    elif action == "get_ad_accounts":
+        if isinstance(result_data, dict) and "message" in result_data:
+            return result_data['message']
+        else:
+            return f"Facebook ad accounts: {json.dumps(result_data, indent=2)}"
+    
+    elif action == "get_campaigns":
+        if isinstance(result_data, dict) and "message" in result_data:
+            return result_data['message']
+        else:
+            return f"Facebook campaigns: {json.dumps(result_data, indent=2)}"
+    
+    # Google Ads actions
+    elif action == "get_all_accounts":
+        if isinstance(result_data, dict) and "message" in result_data:
+            return result_data['message']
+        else:
+            return f"Google Ads accounts: {json.dumps(result_data, indent=2)}"
+    
+    elif action == "get_campaign":
+        if isinstance(result_data, dict) and "message" in result_data:
+            return result_data['message']
+        else:
+            return f"Google Ads campaign: {json.dumps(result_data, indent=2)}"
+    
+    # Shopify actions
+    elif action == "get_store_details":
+        if isinstance(result_data, dict) and "message" in result_data:
+            return result_data['message']
+        else:
+            return f"Shopify store details: {json.dumps(result_data, indent=2)}"
+    
+    elif action == "get_products":
+        if isinstance(result_data, dict) and "message" in result_data:
+            return result_data['message']
+        else:
+            return f"Shopify products: {json.dumps(result_data, indent=2)}"
+    
+    elif action == "get_orders":
+        if isinstance(result_data, dict) and "message" in result_data:
+            return result_data['message']
+        else:
+            return f"Shopify orders: {json.dumps(result_data, indent=2)}"
+    
+    # Gmail actions
+    elif action == "get_unread_emails":
+        if isinstance(result_data, dict) and "message" in result_data:
+            return result_data['message']
+        else:
+            return f"Gmail unread emails: {json.dumps(result_data, indent=2)}"
+    
+    elif action == "send_email":
+        if isinstance(result_data, dict) and "message" in result_data:
+            return result_data['message']
+        else:
+            return f"Email sent: {json.dumps(result_data, indent=2)}"
+    
+    # TikTok actions
+    elif action == "search_videos":
+        if isinstance(result_data, dict) and "message" in result_data:
+            return result_data['message']
+        else:
+            return f"TikTok search results: {json.dumps(result_data, indent=2)}"
+    
+    elif action == "get_post_details":
+        if isinstance(result_data, dict) and "message" in result_data:
+            return result_data['message']
+        else:
+            return f"TikTok post details: {json.dumps(result_data, indent=2)}"
+    
+    else:
+        # For unknown actions, try to extract meaningful content
+        if isinstance(result_data, dict) and "message" in result_data:
+            return result_data['message']
+        else:
+            return f"I found some information for your request '{question}':\n\n{json.dumps(result_data, indent=2)}"
+
+def log_or_print(message: str, api_mode: bool = False):
+    """Log message to file if in API mode, otherwise print to console."""
+    if api_mode:
+        logger.info(message)
+    else:
+        print(message)
 
 # Import common database utilities
 from db_utils import (
@@ -32,6 +292,7 @@ from db_utils import (
     get_google_ads_minion_credentials,
     get_facebook_minion_credentials,
     get_shopify_minion_credentials,
+    get_gmail_minion_credentials,
     update_youtube_token_in_db,
     update_youtube_tokens_in_db,
     update_x_tokens_in_db,
@@ -264,8 +525,29 @@ def analyze_question(question: str) -> Tuple[str, str, Dict[str, Any]]:
         "shopify api", "store api", "ecommerce store", "online store"
     ]
     
+    # Gmail patterns
+    gmail_keywords = [
+        "gmail", "email", "mail", "send email", "send mail", "compose", "compose email",
+        "read email", "read mail", "unread", "unread emails", "inbox", "trash email",
+        "delete email", "mark as read", "open email", "email to", "mail to", "@gmail.com",
+        "gmail.com", "google mail", "googlemail"
+    ]
+    
+    # TikTok patterns
+    tiktok_keywords = [
+        "tiktok", "tiktok.com", "vm.tiktok.com", "tiktok video", "tiktok videos", 
+        "tiktok post", "tiktok posts", "tiktok search", "tiktok creator", "tiktok user",
+        "tiktok hashtag", "tiktok hashtags", "tiktok trending", "tiktok viral",
+        "tiktok dance", "tiktok music", "tiktok challenge", "tiktok duet", "tiktok stitch",
+        "tiktok live", "tiktok story", "tiktok reel", "tiktok short", "tiktok shorts"
+    ]
+    
+    # Check for TikTok-related queries (prioritize TikTok when explicitly mentioned)
+    if any(keyword in question_lower for keyword in tiktok_keywords):
+        return analyze_tiktok_question(question_lower)
+    
     # Check for X-related queries
-    if any(keyword in question_lower for keyword in x_keywords):
+    elif any(keyword in question_lower for keyword in x_keywords):
         return analyze_x_question(question_lower)
     
     # Check for YouTube-related queries
@@ -283,6 +565,10 @@ def analyze_question(question: str) -> Tuple[str, str, Dict[str, Any]]:
     # Check for Shopify-related queries
     elif any(keyword in question_lower for keyword in shopify_keywords):
         return analyze_shopify_question(question_lower)
+    
+    # Check for Gmail-related queries
+    elif any(keyword in question_lower for keyword in gmail_keywords):
+        return analyze_gmail_question(question_lower)
     
     # Default to YouTube search for backward compatibility
     else:
@@ -329,7 +615,8 @@ def analyze_youtube_question(question_lower: str) -> Tuple[str, str, Dict[str, A
     # Video listing patterns
     if any(keyword in question_lower for keyword in [
         "list my videos", "show my videos", "my videos", "channel videos", "uploaded videos",
-        "get all my videos", "get my videos", "fetch my videos"
+        "get all my videos", "get my videos", "fetch my videos", "get all my youtube videos",
+        "list my youtube videos", "show my youtube videos"
     ]):
         return "youtube", "list_videos", {}
     
@@ -519,6 +806,196 @@ def analyze_shopify_question(question_lower: str) -> Tuple[str, str, Dict[str, A
     # Default Shopify action - learn API first
     return "shopify", "learn_shopify_api", {"api": "admin"}
 
+def analyze_gmail_question(question_lower: str) -> Tuple[str, str, Dict[str, Any]]:
+    """Analyze Gmail specific questions."""
+    
+    # Gmail send email patterns
+    if any(keyword in question_lower for keyword in [
+        "send email", "send mail", "compose", "compose email", "email to", "mail to"
+    ]):
+        # Extract recipient and subject from the question
+        recipient = extract_email_recipient(question_lower)
+        subject = extract_email_subject(question_lower)
+        message = extract_email_message(question_lower)
+        return "gmail", "send_email", {
+            "recipient_id": recipient,
+            "subject": subject,
+            "message": message
+        }
+    
+    # Gmail read email patterns
+    if any(keyword in question_lower for keyword in [
+        "read email", "read mail", "open email", "view email"
+    ]):
+        email_id = extract_email_id(question_lower)
+        if email_id:
+            return "gmail", "read_email", {"email_id": email_id}
+        else:
+            return "gmail", "get_unread_emails", {}
+    
+    # Gmail unread emails patterns
+    if any(keyword in question_lower for keyword in [
+        "unread", "unread emails", "inbox", "new emails", "check emails"
+    ]):
+        return "gmail", "get_unread_emails", {}
+    
+    # Gmail trash/delete patterns
+    if any(keyword in question_lower for keyword in [
+        "trash email", "delete email", "remove email"
+    ]):
+        email_id = extract_email_id(question_lower)
+        if email_id:
+            return "gmail", "trash_email", {"email_id": email_id}
+        else:
+            return "gmail", "get_unread_emails", {}
+    
+    # Gmail mark as read patterns
+    if any(keyword in question_lower for keyword in [
+        "mark as read", "mark read", "read"
+    ]):
+        email_id = extract_email_id(question_lower)
+        if email_id:
+            return "gmail", "mark_email_as_read", {"email_id": email_id}
+        else:
+            return "gmail", "get_unread_emails", {}
+    
+    # Default Gmail action - get unread emails
+    return "gmail", "get_unread_emails", {}
+
+def analyze_tiktok_question(question_lower: str) -> Tuple[str, str, Dict[str, Any]]:
+    """Analyze TikTok specific questions."""
+    
+    # TikTok search patterns
+    if any(keyword in question_lower for keyword in [
+        "search", "find", "look for", "show me", "get", "videos of", "videos about"
+    ]):
+        # Extract search query
+        query = extract_tiktok_search_query(question_lower)
+        return "tiktok", "search_videos", {"query": query}
+    
+    # TikTok post details patterns
+    if any(keyword in question_lower for keyword in [
+        "details", "info", "information", "about", "post details", "video details"
+    ]):
+        # Extract TikTok URL or video ID
+        tiktok_url = extract_tiktok_url(question_lower)
+        if tiktok_url:
+            return "tiktok", "get_post_details", {"tiktok_url": tiktok_url}
+    
+    # TikTok subtitle patterns
+    if any(keyword in question_lower for keyword in [
+        "subtitle", "subtitles", "transcript", "transcription", "captions"
+    ]):
+        # Extract TikTok URL or video ID
+        tiktok_url = extract_tiktok_url(question_lower)
+        if tiktok_url:
+            language_code = extract_language_code(question_lower)
+            return "tiktok", "get_subtitle", {
+                "tiktok_url": tiktok_url,
+                "language_code": language_code
+            }
+    
+    # TikTok credentials patterns
+    if any(keyword in question_lower for keyword in [
+        "credentials", "api key", "token", "status", "connection", "test"
+    ]):
+        return "tiktok", "get_credentials_status", {}
+    
+    # Default TikTok action - search
+    query = extract_tiktok_search_query(question_lower)
+    return "tiktok", "search_videos", {"query": query}
+
+def extract_tiktok_search_query(question: str) -> str:
+    """Extract search query from TikTok question."""
+    query = question.lower()
+    
+    # Handle specific TikTok patterns first
+    tiktok_patterns = [
+        "get tiktok videos of",
+        "tiktok videos of", 
+        "tiktok videos about",
+        "search for tiktok videos of",
+        "find tiktok videos of",
+        "show me tiktok videos of"
+    ]
+    
+    for pattern in tiktok_patterns:
+        if pattern in query:
+            query = query.replace(pattern, "").strip()
+            break
+    
+    # Handle general patterns
+    general_patterns = ["search for", "find", "look for", "show me", "get", "videos of", "videos about"]
+    for pattern in general_patterns:
+        if query.startswith(pattern):
+            query = query[len(pattern):].strip()
+            break
+    
+    # Remove common TikTok-specific words
+    tiktok_words = ["tiktok", "video", "videos", "post", "posts"]
+    for word in tiktok_words:
+        query = query.replace(word, "").strip()
+    
+    # Clean up extra spaces
+    query = " ".join(query.split())
+    
+    return query if query else question
+
+def extract_tiktok_url(question: str) -> Optional[str]:
+    """Extract TikTok URL or video ID from question."""
+    import re
+    
+    # Look for TikTok URLs
+    tiktok_url_patterns = [
+        r'https?://(?:www\.)?tiktok\.com/@[\w.-]+/video/(\d+)',
+        r'https?://vm\.tiktok\.com/(\w+)',
+        r'tiktok\.com/@[\w.-]+/video/(\d+)',
+        r'vm\.tiktok\.com/(\w+)'
+    ]
+    
+    for pattern in tiktok_url_patterns:
+        match = re.search(pattern, question, re.IGNORECASE)
+        if match:
+            return match.group(0)
+    
+    # Look for just video IDs (long numbers)
+    video_id_match = re.search(r'\b(\d{15,})\b', question)
+    if video_id_match:
+        return video_id_match.group(1)
+    
+    return None
+
+def extract_language_code(question: str) -> Optional[str]:
+    """Extract language code from question."""
+    import re
+    
+    # Common language patterns
+    language_patterns = [
+        (r'\benglish\b', 'en'),
+        (r'\bspanish\b', 'es'),
+        (r'\bfrench\b', 'fr'),
+        (r'\bgerman\b', 'de'),
+        (r'\bitalian\b', 'it'),
+        (r'\bportuguese\b', 'pt'),
+        (r'\brussian\b', 'ru'),
+        (r'\bchinese\b', 'zh'),
+        (r'\bjapanese\b', 'ja'),
+        (r'\bkorean\b', 'ko'),
+        (r'\barabic\b', 'ar'),
+        (r'\bhindi\b', 'hi'),
+    ]
+    
+    for pattern, code in language_patterns:
+        if re.search(pattern, question, re.IGNORECASE):
+            return code
+    
+    # Look for language codes like "en", "es", etc.
+    lang_code_match = re.search(r'\b([a-z]{2})\b', question, re.IGNORECASE)
+    if lang_code_match:
+        return lang_code_match.group(1).lower()
+    
+    return None
+
 def extract_customer_id(question: str) -> Optional[str]:
     """Extract customer ID from question."""
     # Look for customer ID patterns
@@ -652,6 +1129,72 @@ def extract_page_id(question: str) -> Optional[str]:
     
     return None
 
+def extract_email_recipient(question: str) -> str:
+    """Extract email recipient from question."""
+    import re
+    # Look for email patterns
+    email_match = re.search(r'([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})', question)
+    if email_match:
+        return email_match.group(1)
+    
+    # Look for "to" patterns
+    to_match = re.search(r'to\s+([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})', question, re.IGNORECASE)
+    if to_match:
+        return to_match.group(1)
+    
+    return ""
+
+def extract_email_subject(question: str) -> str:
+    """Extract email subject from question."""
+    import re
+    # Look for subject patterns
+    subject_match = re.search(r'subject[:\s]*["\']?([^"\']+)["\']?', question, re.IGNORECASE)
+    if subject_match:
+        return subject_match.group(1).strip()
+    
+    # Look for "about" patterns
+    about_match = re.search(r'about[:\s]*["\']?([^"\']+)["\']?', question, re.IGNORECASE)
+    if about_match:
+        return about_match.group(1).strip()
+    
+    return "Email from MCP Client"
+
+def extract_email_message(question: str) -> str:
+    """Extract email message content from question."""
+    import re
+    # Look for message patterns
+    message_match = re.search(r'message[:\s]*["\']?([^"\']+)["\']?', question, re.IGNORECASE)
+    if message_match:
+        return message_match.group(1).strip()
+    
+    # Look for "body" patterns
+    body_match = re.search(r'body[:\s]*["\']?([^"\']+)["\']?', question, re.IGNORECASE)
+    if body_match:
+        return body_match.group(1).strip()
+    
+    # Look for "content" patterns
+    content_match = re.search(r'content[:\s]*["\']?([^"\']+)["\']?', question, re.IGNORECASE)
+    if content_match:
+        return content_match.group(1).strip()
+    
+    # If no specific message found, use the whole question as context
+    return "Please check the email content."
+
+def extract_email_id(question: str) -> Optional[str]:
+    """Extract email ID from question."""
+    import re
+    # Look for email ID patterns (Gmail message IDs are typically long alphanumeric strings)
+    email_id_match = re.search(r'email[_\s]*id[:\s]*([a-zA-Z0-9_-]{20,})', question, re.IGNORECASE)
+    if email_id_match:
+        return email_id_match.group(1)
+    
+    # Look for message ID patterns
+    message_id_match = re.search(r'message[_\s]*id[:\s]*([a-zA-Z0-9_-]{20,})', question, re.IGNORECASE)
+    if message_id_match:
+        return message_id_match.group(1)
+    
+    return None
+
 # ---------------------------
 # YouTube API Functions
 # ---------------------------
@@ -739,35 +1282,35 @@ def call_google_ads_mcp_server(tool_name: str, user_id: str, **kwargs) -> Dict[s
         logger.error(f"Error calling Google Ads MCP server: {e}")
         return {"error": str(e)}
 
-def google_ads_action(user_id: str, question: str) -> Dict[str, Any]:
+def google_ads_action(user_id: str, question: str, api_mode: bool = False) -> Dict[str, Any]:
     """
     Main Google Ads action orchestrator.
     Analyzes the question and performs the appropriate Google Ads action.
     """
     try:
-        print(f"🎯 Processing: '{question}' for user {user_id}")
+        log_or_print(f"Processing: '{question}' for user {user_id}", api_mode)
         
         # Get user's Google Ads minion credentials
         creds = get_google_ads_minion_credentials(user_id)
         if not creds:
             return {
-                "error": "❌ No active Google Ads minion found for this user. Please ensure you have an active Google Ads minion configured.",
+                "error": "No active Google Ads minion found for this user. Please ensure you have an active Google Ads minion configured.",
                 "success": False
             }
         
-        print(f"✅ Found Google Ads credentials for user {user_id}")
-        print(f"   Minion: {creds.get('minion_name')}")
-        print(f"   Has developer token: {bool(creds.get('google_ads_developer_token'))}")
-        print(f"   Has client credentials: {bool(creds.get('google_ads_client_id'))}")
+        log_or_print(f"Found Google Ads credentials for user {user_id}", api_mode)
+        log_or_print(f"   Minion: {creds.get('minion_name')}", api_mode)
+        log_or_print(f"   Has developer token: {bool(creds.get('google_ads_developer_token'))}", api_mode)
+        log_or_print(f"   Has client credentials: {bool(creds.get('google_ads_client_id'))}", api_mode)
         
         # Analyze question and determine action
         service, action_type, params = analyze_question(question)
-        print(f"🎯 Service: {service}, Action: {action_type}")
+        log_or_print(f"Service: {service}, Action: {action_type}", api_mode)
         
         # Execute the appropriate Google Ads action
         if action_type == "get_all_accounts":
             customer_id = params.get("customer_id", "default")
-            print(f"📊 Getting all accounts for customer: {customer_id}")
+            log_or_print(f"Getting all accounts for customer: {customer_id}", api_mode)
             result = call_google_ads_mcp_server("get_all_accounts", user_id, customer_id=customer_id)
             return {
                 "action": "get_all_accounts",
@@ -778,7 +1321,7 @@ def google_ads_action(user_id: str, question: str) -> Dict[str, Any]:
             
         elif action_type == "get_campaign":
             customer_id = params.get("customer_id", "default")
-            print(f"📊 Getting campaign for customer: {customer_id}")
+            log_or_print(f"Getting campaign for customer: {customer_id}", api_mode)
             result = call_google_ads_mcp_server("get_campaign", user_id, customer_id=customer_id)
             return {
                 "action": "get_campaign",
@@ -789,7 +1332,7 @@ def google_ads_action(user_id: str, question: str) -> Dict[str, Any]:
             
         elif action_type == "add_campaign":
             customer_id = params.get("customer_id", "default")
-            print(f"➕ Adding campaign for customer: {customer_id}")
+            log_or_print(f"Adding campaign for customer: {customer_id}", api_mode)
             result = call_google_ads_mcp_server("add_campaign", user_id, customer_id=customer_id)
             return {
                 "action": "add_campaign",
@@ -801,7 +1344,7 @@ def google_ads_action(user_id: str, question: str) -> Dict[str, Any]:
         elif action_type == "remove_campaign":
             customer_id = params.get("customer_id", "default")
             campaign_id = params.get("campaign_id", "default")
-            print(f"➖ Removing campaign {campaign_id} for customer: {customer_id}")
+            log_or_print(f"Removing campaign {campaign_id} for customer: {customer_id}", api_mode)
             result = call_google_ads_mcp_server("remove_campaign", user_id, customer_id=customer_id, campaign_id=campaign_id)
             return {
                 "action": "remove_campaign",
@@ -814,7 +1357,7 @@ def google_ads_action(user_id: str, question: str) -> Dict[str, Any]:
         elif action_type == "add_ad_group":
             customer_id = params.get("customer_id", "default")
             campaign_id = params.get("campaign_id", "default")
-            print(f"➕ Adding ad group to campaign {campaign_id} for customer: {customer_id}")
+            log_or_print(f"Adding ad group to campaign {campaign_id} for customer: {customer_id}", api_mode)
             result = call_google_ads_mcp_server("add_ad_group", user_id, customer_id=customer_id, campaign_id=campaign_id)
             return {
                 "action": "add_ad_group",
@@ -826,7 +1369,7 @@ def google_ads_action(user_id: str, question: str) -> Dict[str, Any]:
             
         elif action_type == "get_all_client_accounts":
             manager_id = params.get("manager_id", "default")
-            print(f"👥 Getting client accounts for manager: {manager_id}")
+            log_or_print(f"Getting client accounts for manager: {manager_id}", api_mode)
             result = call_google_ads_mcp_server("get_all_client_accounts", user_id, manager_id=manager_id)
             return {
                 "action": "get_all_client_accounts",
@@ -838,7 +1381,7 @@ def google_ads_action(user_id: str, question: str) -> Dict[str, Any]:
         elif action_type == "create_customer":
             manager_customer_id = params.get("manager_customer_id", "default")
             country_code = params.get("country_code", "US")
-            print(f"👤 Creating customer for manager {manager_customer_id} in country {country_code}")
+            log_or_print(f"Creating customer for manager {manager_customer_id} in country {country_code}", api_mode)
             result = call_google_ads_mcp_server("create_customer", user_id, manager_customer_id=manager_customer_id, country_code=country_code)
             return {
                 "action": "create_customer",
@@ -994,34 +1537,120 @@ def call_shopify_mcp_server(tool_name: str, user_id: str, **kwargs) -> Dict[str,
         logger.error(f"Error calling Shopify MCP server: {e}")
         return {"error": str(e)}
 
-def x_action(user_id: str, question: str) -> Dict[str, Any]:
+def call_gmail_mcp_server(tool_name: str, user_id: str, **kwargs) -> Dict[str, Any]:
+    """Call Gmail MCP server tools."""
+    try:
+        # Import the Gmail MCP server functions
+        from gmail_mcp_server import (
+            send_email, get_unread_emails, read_email, 
+            trash_email, mark_email_as_read, open_email
+        )
+        
+        # Map tool names to functions
+        tool_functions = {
+            "send_email": send_email,
+            "get_unread_emails": get_unread_emails,
+            "read_email": read_email,
+            "trash_email": trash_email,
+            "mark_email_as_read": mark_email_as_read,
+            "open_email": open_email
+        }
+        
+        if tool_name not in tool_functions:
+            raise ValueError(f"Unknown Gmail tool: {tool_name}")
+        
+        # Call the tool with user_id parameter for Gmail tools
+        result = tool_functions[tool_name](user_id=user_id, **kwargs)
+        
+        # Extract the text content from MCP result
+        if hasattr(result, 'content') and result.content:
+            text_content = result.content[0].text
+            try:
+                return json.loads(text_content)
+            except json.JSONDecodeError:
+                return {"message": text_content}
+        else:
+            return {"error": "No content returned from Gmail MCP server"}
+            
+    except Exception as e:
+        logger.error(f"Error calling Gmail MCP server: {e}")
+        return {"error": str(e)}
+
+def call_tiktok_mcp_server(tool_name: str, user_id: str, **kwargs) -> Dict[str, Any]:
+    """Call TikTok MCP server tools."""
+    try:
+        # Import TikTok MCP server
+        from tiktok_mcp_server import mcp
+        import asyncio
+        
+        # Create a new event loop for this call
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        try:
+            # Call the tool asynchronously
+            result = loop.run_until_complete(mcp.call_tool(tool_name, {"user_id": user_id, **kwargs}))
+            
+            # Extract text content from result
+            if isinstance(result, tuple) and len(result) >= 2:
+                # Result is a tuple (content, metadata)
+                content, metadata = result
+                if hasattr(content, '__iter__'):
+                    text_content = ""
+                    for item in content:
+                        if hasattr(item, 'text'):
+                            text_content += item.text + "\n"
+                    
+                    if text_content.strip():
+                        return {"message": text_content}
+                else:
+                    return {"message": str(content)}
+            elif hasattr(result, 'content') and result.content:
+                text_content = ""
+                for item in result.content:
+                    if hasattr(item, 'text'):
+                        text_content += item.text + "\n"
+                
+                if text_content.strip():
+                    return {"message": text_content}
+            else:
+                return {"error": "No content returned from TikTok MCP server"}
+                
+        finally:
+            loop.close()
+            
+    except Exception as e:
+        logger.error(f"Error calling TikTok MCP server: {e}")
+        return {"error": str(e)}
+
+def x_action(user_id: str, question: str, api_mode: bool = False) -> Dict[str, Any]:
     """
     Main X action orchestrator.
     Analyzes the question and performs the appropriate X action.
     """
     try:
-        print(f"🐦 Processing: '{question}' for user {user_id}")
+        log_or_print(f"Processing: '{question}' for user {user_id}", api_mode)
         
         # Get user's X minion credentials
         creds = get_x_minion_credentials(user_id)
         if not creds:
             return {
-                "error": "❌ No active X minion found for this user. Please ensure you have an active X minion configured.",
+                "error": "No active X minion found for this user. Please ensure you have an active X minion configured.",
                 "success": False
             }
         
-        print(f"✅ Found X credentials for user {user_id}")
-        print(f"   Minion: {creds.get('minion_name')}")
-        print(f"   Has token: {bool(creds.get('x_token'))}")
-        print(f"   Has bearer token: {bool(creds.get('x_bearer_token'))}")
+        log_or_print(f"Found X credentials for user {user_id}", api_mode)
+        log_or_print(f"   Minion: {creds.get('minion_name')}", api_mode)
+        log_or_print(f"   Has token: {bool(creds.get('x_token'))}", api_mode)
+        log_or_print(f"   Has bearer token: {bool(creds.get('x_bearer_token'))}", api_mode)
         
         # Analyze question and determine action
         service, action_type, params = analyze_question(question)
-        print(f"🎯 Service: {service}, Action: {action_type}")
+        log_or_print(f"Service: {service}, Action: {action_type}", api_mode)
         
         # Execute the appropriate X action
         if action_type == "get_my_user_info":
-            print("👤 Getting your X user info...")
+            log_or_print("Getting your X user info...", api_mode)
             result = call_x_mcp_server("get_my_user_info", user_id)
             return {
                 "action": "get_my_user_info",
@@ -1031,7 +1660,7 @@ def x_action(user_id: str, question: str) -> Dict[str, Any]:
             
         elif action_type == "create_post":
             text = params.get("text", question)
-            print(f"📝 Creating post: '{text}'")
+            log_or_print(f"Creating post: '{text}'", api_mode)
             result = call_x_mcp_server("create_post", user_id, text=text)
             return {
                 "action": "create_post",
@@ -1043,7 +1672,7 @@ def x_action(user_id: str, question: str) -> Dict[str, Any]:
         elif action_type == "search_recent_tweets":
             query = params.get("query", question)
             max_results = params.get("max_results", 10)
-            print(f"🔍 Searching tweets: '{query}'")
+            log_or_print(f"Searching tweets: '{query}'", api_mode)
             result = call_x_mcp_server("search_recent_tweets", user_id, query=query, max_results=max_results)
             return {
                 "action": "search_recent_tweets",
@@ -1056,10 +1685,10 @@ def x_action(user_id: str, question: str) -> Dict[str, Any]:
             username = params.get("username")
             if not username:
                 return {
-                    "error": "❌ Please provide a username to look up.",
+                    "error": "Please provide a username to look up.",
                     "success": False
                 }
-            print(f"👤 Looking up user: @{username}")
+            log_or_print(f"Looking up user: @{username}", api_mode)
             result = call_x_mcp_server("get_user_by_username", user_id, username=username)
             return {
                 "action": "get_user_by_username",
@@ -1085,61 +1714,61 @@ def x_action(user_id: str, question: str) -> Dict[str, Any]:
 # Main Orchestrator Function
 # ---------------------------
 
-def youtube_action(user_id: str, question: str) -> Dict[str, Any]:
+def youtube_action(user_id: str, question: str, api_mode: bool = False) -> Dict[str, Any]:
     """
     Main YouTube action orchestrator.
     Analyzes the question and performs the appropriate YouTube action.
     """
     try:
-        print(f"🎬 Processing: '{question}' for user {user_id}")
+        log_or_print(f"Processing: '{question}' for user {user_id}", api_mode)
         
         # Get user's YouTube minion credentials
         creds = get_youtube_minion_credentials(user_id)
         if not creds:
             return {
-                "error": "❌ No active YouTube minion found for this user. Please ensure you have an active YouTube minion configured.",
+                "error": "No active YouTube minion found for this user. Please ensure you have an active YouTube minion configured.",
                 "success": False
             }
         
-        print(f"✅ Found YouTube credentials for user {user_id}")
-        print(f"   Channel ID: {creds.get('youtube_channel_id')}")
-        print(f"   Minion: {creds.get('minion_name')}")
+        log_or_print(f"Found YouTube credentials for user {user_id}", api_mode)
+        log_or_print(f"   Channel ID: {creds.get('youtube_channel_id')}", api_mode)
+        log_or_print(f"   Minion: {creds.get('minion_name')}", api_mode)
         
         # Check token validity first
         token_check = check_token_validity(user_id)
         if not token_check.get("valid"):
-            print(f"⚠️ Token is invalid: {token_check.get('error')}")
-            print("🔄 Attempting to refresh token...")
+            log_or_print(f"Token is invalid: {token_check.get('error')}", api_mode)
+            log_or_print("Attempting to refresh token...", api_mode)
             
             new_token = refresh_youtube_token(user_id)
             if new_token:
                 if update_youtube_token_in_db(user_id, new_token):
-                    print("✅ Token refreshed successfully!")
+                    log_or_print("Token refreshed successfully!", api_mode)
                 else:
                     return {
-                        "error": "❌ Token refreshed but failed to update database",
+                        "error": "Token refreshed but failed to update database",
                         "success": False
                     }
             else:
-                print("❌ Token refresh failed. Creating new token...")
-                print("🔑 Using client credentials from database to create new token...")
+                log_or_print("Token refresh failed. Creating new token...", api_mode)
+                log_or_print("Using client credentials from database to create new token...", api_mode)
                 
                 new_token = create_new_youtube_token(user_id)
                 if new_token:
-                    print("✅ New token created successfully!")
+                    log_or_print("New token created successfully!", api_mode)
                 else:
                     return {
-                        "error": "❌ Failed to create new token. Please check your client credentials and try again.",
+                        "error": "Failed to create new token. Please check your client credentials and try again.",
                         "success": False
                     }
         
         # Analyze question and determine action
         service, action_type, params = analyze_youtube_question(question.lower())
-        print(f"🎯 Action: {action_type}")
+        log_or_print(f"Action: {action_type}", api_mode)
         
         # Execute the appropriate action
         if action_type == "list_videos":
-            print("📹 Fetching your videos...")
+            log_or_print("Fetching your videos...", api_mode)
             result = call_youtube_mcp_server("list_videos", user_id)
             return {
                 "action": "list_videos",
@@ -1149,7 +1778,7 @@ def youtube_action(user_id: str, question: str) -> Dict[str, Any]:
             
         elif action_type == "search_videos":
             query = params.get("query", question)
-            print(f"🔍 Searching for: '{query}'")
+            log_or_print(f"Searching for: '{query}'", api_mode)
             result = call_youtube_mcp_server("search_videos", user_id, query=query)
             return {
                 "action": "search_videos",
@@ -1162,10 +1791,10 @@ def youtube_action(user_id: str, question: str) -> Dict[str, Any]:
             video_id = params.get("video_id")
             if not video_id:
                 return {
-                    "error": "❌ Please provide a video ID or YouTube URL for analytics.",
+                    "error": "Please provide a video ID or YouTube URL for analytics.",
                     "success": False
                 }
-            print(f"📊 Getting analytics for video: {video_id}")
+            log_or_print(f"Getting analytics for video: {video_id}", api_mode)
             result = call_youtube_mcp_server("get_video_analytics", user_id, video_id=video_id)
             return {
                 "action": "video_analytics",
@@ -1175,7 +1804,7 @@ def youtube_action(user_id: str, question: str) -> Dict[str, Any]:
             }
             
         elif action_type == "channel_analytics":
-            print("📊 Getting channel analytics...")
+            log_or_print("Getting channel analytics...", api_mode)
             result = call_youtube_mcp_server("get_channel_analytics", user_id)
             return {
                 "action": "channel_analytics",
@@ -1185,46 +1814,46 @@ def youtube_action(user_id: str, question: str) -> Dict[str, Any]:
             
         else:
             return {
-                "error": f"❌ Action '{action_type}' not yet implemented or not recognized.",
+                "error": f"Action '{action_type}' not yet implemented or not recognized.",
                 "success": False
             }
         
     except Exception as e:
         logger.error(f"Error in YouTube action: {str(e)}")
         return {
-            "error": f"❌ Error executing YouTube action: {str(e)}",
+            "error": f"Error executing YouTube action: {str(e)}",
             "success": False
         }
 
-def facebook_action(user_id: str, question: str) -> Dict[str, Any]:
+def facebook_action(user_id: str, question: str, api_mode: bool = False) -> Dict[str, Any]:
     """
     Main Facebook action orchestrator.
     Analyzes the question and performs the appropriate Facebook action.
     """
     try:
-        print(f"📘 Processing: '{question}' for user {user_id}")
+        log_or_print(f"Processing: '{question}' for user {user_id}", api_mode)
         
         # Get user's Facebook minion credentials
         creds = get_facebook_minion_credentials(user_id)
         if not creds:
             return {
-                "error": "❌ No active Facebook minion found for this user. Please ensure you have an active Facebook minion configured.",
+                "error": "No active Facebook minion found for this user. Please ensure you have an active Facebook minion configured.",
                 "success": False
             }
         
-        print(f"✅ Found Facebook credentials for user {user_id}")
-        print(f"   App ID: {creds.get('app_id')}")
-        print(f"   Minion: {creds.get('minion_name')}")
+        log_or_print(f"Found Facebook credentials for user {user_id}", api_mode)
+        log_or_print(f"   App ID: {creds.get('app_id')}", api_mode)
+        log_or_print(f"   Minion: {creds.get('minion_name')}", api_mode)
         
         # Analyze the question to determine action
         service, action_type, params = analyze_facebook_question(question.lower())
         
-        print(f"🎯 Detected action: {action_type}")
-        print(f"📋 Parameters: {params}")
+        log_or_print(f"Detected action: {action_type}", api_mode)
+        log_or_print(f"Parameters: {params}", api_mode)
         
         # Execute the appropriate action
         if action_type == "get_user_info":
-            print("👤 Getting user information...")
+            log_or_print("Getting user information...", api_mode)
             result = call_facebook_mcp_server("get_user_info", user_id)
             return {
                 "action": "get_user_info",
@@ -1233,7 +1862,7 @@ def facebook_action(user_id: str, question: str) -> Dict[str, Any]:
             }
             
         elif action_type == "get_user_credentials":
-            print("🔑 Getting user credentials...")
+            log_or_print("Getting user credentials...", api_mode)
             result = call_facebook_mcp_server("get_user_credentials", user_id)
             return {
                 "action": "get_user_credentials",
@@ -1242,7 +1871,7 @@ def facebook_action(user_id: str, question: str) -> Dict[str, Any]:
             }
             
         elif action_type == "get_pages":
-            print("📄 Getting pages...")
+            log_or_print("Getting pages...", api_mode)
             result = call_facebook_mcp_server("get_pages", user_id)
             return {
                 "action": "get_pages",
@@ -1251,7 +1880,7 @@ def facebook_action(user_id: str, question: str) -> Dict[str, Any]:
             }
             
         elif action_type == "get_ad_accounts":
-            print("💰 Getting ad accounts...")
+            log_or_print("Getting ad accounts...", api_mode)
             result = call_facebook_mcp_server("get_ad_accounts", user_id)
             return {
                 "action": "get_ad_accounts",
@@ -1261,7 +1890,7 @@ def facebook_action(user_id: str, question: str) -> Dict[str, Any]:
             
         elif action_type == "get_campaigns":
             ad_account_id = params.get("ad_account_id")
-            print(f"📊 Getting campaigns for ad account: {ad_account_id}")
+            log_or_print(f"Getting campaigns for ad account: {ad_account_id}", api_mode)
             result = call_facebook_mcp_server("get_campaigns", user_id, ad_account_id=ad_account_id)
             return {
                 "action": "get_campaigns",
@@ -1272,7 +1901,7 @@ def facebook_action(user_id: str, question: str) -> Dict[str, Any]:
             
         elif action_type == "get_page_feed":
             page_id = params.get("page_id")
-            print(f"📰 Getting page feed for page: {page_id or 'auto-detect'}")
+            log_or_print(f"Getting page feed for page: {page_id or 'auto-detect'}", api_mode)
             result = call_facebook_mcp_server("get_page_feed", user_id, page_id=page_id)
             return {
                 "action": "get_page_feed",
@@ -1283,7 +1912,7 @@ def facebook_action(user_id: str, question: str) -> Dict[str, Any]:
             
         elif action_type == "get_page_insights":
             page_id = params.get("page_id")
-            print(f"📈 Getting page insights for page: {page_id or 'auto-detect'}")
+            log_or_print(f"Getting page insights for page: {page_id or 'auto-detect'}", api_mode)
             result = call_facebook_mcp_server("get_page_insights", user_id, page_id=page_id)
             return {
                 "action": "get_page_insights",
@@ -1305,38 +1934,38 @@ def facebook_action(user_id: str, question: str) -> Dict[str, Any]:
             "success": False
         }
 
-def shopify_action(user_id: str, question: str) -> Dict[str, Any]:
+def shopify_action(user_id: str, question: str, api_mode: bool = False) -> Dict[str, Any]:
     """
     Main Shopify action orchestrator.
     Analyzes the question and performs the appropriate Shopify action.
     """
     try:
-        print(f"🛍️ Processing: '{question}' for user {user_id}")
+        log_or_print(f"Processing: '{question}' for user {user_id}", api_mode)
         
         # Get user's Shopify minion credentials
         creds = get_shopify_minion_credentials(user_id)
         if not creds:
             return {
-                "error": "❌ No active Shopify minion found for this user. Please ensure you have an active Shopify minion configured.",
+                "error": "No active Shopify minion found for this user. Please ensure you have an active Shopify minion configured.",
                 "success": False
             }
         
-        print(f"✅ Found Shopify credentials for user {user_id}")
-        print(f"   Store Domain: {creds.get('shopify_store_domain')}")
-        print(f"   Minion: {creds.get('minion_name')}")
+        log_or_print(f"Found Shopify credentials for user {user_id}", api_mode)
+        log_or_print(f"   Store Domain: {creds.get('shopify_store_domain')}", api_mode)
+        log_or_print(f"   Minion: {creds.get('minion_name')}", api_mode)
         
         # Analyze the question to determine action
         service, action_type, params = analyze_shopify_question(question.lower())
         
-        print(f"🎯 Detected action: {action_type}")
-        print(f"📋 Parameters: {params}")
+        log_or_print(f"Detected action: {action_type}", api_mode)
+        log_or_print(f"Parameters: {params}", api_mode)
         
         # Generate conversation ID for Shopify tools
         conversation_id = str(uuid.uuid4())
         
         # Execute the appropriate action
         if action_type == "get_user_credentials":
-            print("🔑 Getting user credentials...")
+            log_or_print("Getting user credentials...", api_mode)
             result = call_shopify_mcp_server("get_user_credentials", user_id)
             return {
                 "action": "get_user_credentials",
@@ -1346,7 +1975,7 @@ def shopify_action(user_id: str, question: str) -> Dict[str, Any]:
             
         elif action_type == "learn_shopify_api":
             api = params.get("api", "admin")
-            print(f"📚 Learning Shopify {api} API...")
+            log_or_print(f"Learning Shopify {api} API...", api_mode)
             result = call_shopify_mcp_server("learn_shopify_api", user_id, api=api, conversation_id=conversation_id)
             return {
                 "action": "learn_shopify_api",
@@ -1357,7 +1986,7 @@ def shopify_action(user_id: str, question: str) -> Dict[str, Any]:
             }
             
         elif action_type == "get_store_details":
-            print("🏪 Getting store details...")
+            log_or_print("Getting store details...", api_mode)
             result = call_shopify_mcp_server("get_store_details", user_id, conversation_id=conversation_id)
             return {
                 "action": "get_store_details",
@@ -1367,7 +1996,7 @@ def shopify_action(user_id: str, question: str) -> Dict[str, Any]:
             }
             
         elif action_type == "get_store_analytics":
-            print("📊 Getting store analytics...")
+            log_or_print("Getting store analytics...", api_mode)
             result = call_shopify_mcp_server("get_store_analytics", user_id, conversation_id=conversation_id)
             return {
                 "action": "get_store_analytics",
@@ -1377,7 +2006,7 @@ def shopify_action(user_id: str, question: str) -> Dict[str, Any]:
             }
             
         elif action_type == "get_products":
-            print("📦 Getting products...")
+            log_or_print("Getting products...", api_mode)
             result = call_shopify_mcp_server("get_products", user_id, conversation_id=conversation_id)
             return {
                 "action": "get_products",
@@ -1387,7 +2016,7 @@ def shopify_action(user_id: str, question: str) -> Dict[str, Any]:
             }
             
         elif action_type == "get_orders":
-            print("📋 Getting orders...")
+            log_or_print("Getting orders...", api_mode)
             result = call_shopify_mcp_server("get_orders", user_id, conversation_id=conversation_id)
             return {
                 "action": "get_orders",
@@ -1397,7 +2026,7 @@ def shopify_action(user_id: str, question: str) -> Dict[str, Any]:
             }
             
         elif action_type == "get_customers":
-            print("👥 Getting customers...")
+            log_or_print("Getting customers...", api_mode)
             result = call_shopify_mcp_server("get_customers", user_id, conversation_id=conversation_id)
             return {
                 "action": "get_customers",
@@ -1407,7 +2036,7 @@ def shopify_action(user_id: str, question: str) -> Dict[str, Any]:
             }
             
         elif action_type == "get_inventory":
-            print("📦 Getting inventory...")
+            log_or_print("Getting inventory...", api_mode)
             result = call_shopify_mcp_server("get_inventory", user_id, conversation_id=conversation_id)
             return {
                 "action": "get_inventory",
@@ -1429,26 +2058,256 @@ def shopify_action(user_id: str, question: str) -> Dict[str, Any]:
             "success": False
         }
 
+def gmail_action(user_id: str, question: str, api_mode: bool = False) -> Dict[str, Any]:
+    """
+    Main Gmail action orchestrator.
+    Analyzes the question and performs the appropriate Gmail action.
+    """
+    try:
+        log_or_print(f"Processing: '{question}' for user {user_id}", api_mode)
+        
+        # Get user's Gmail minion credentials
+        creds = get_gmail_minion_credentials(user_id)
+        if not creds:
+            return {
+                "error": "No active Gmail minion found for this user. Please ensure you have an active Gmail minion configured.",
+                "success": False
+            }
+        
+        log_or_print(f"Found Gmail credentials for user {user_id}", api_mode)
+        log_or_print(f"   Email: {creds.get('gmail_user_email')}", api_mode)
+        log_or_print(f"   Minion: {creds.get('minion_name')}", api_mode)
+        
+        # Analyze the question to determine action
+        service, action_type, params = analyze_gmail_question(question.lower())
+        
+        log_or_print(f"Detected action: {action_type}", api_mode)
+        log_or_print(f"Parameters: {params}", api_mode)
+        
+        # Execute the appropriate action
+        if action_type == "send_email":
+            recipient = params.get("recipient_id")
+            subject = params.get("subject")
+            message = params.get("message")
+            
+            if not recipient:
+                return {
+                    "error": "No recipient email address found. Please specify an email address.",
+                    "success": False
+                }
+            
+            log_or_print(f"Sending email to: {recipient}", api_mode)
+            log_or_print(f"Subject: {subject}", api_mode)
+            result = call_gmail_mcp_server("send_email", user_id, 
+                                        recipient_id=recipient, 
+                                        subject=subject, 
+                                        message=message)
+            return {
+                "action": "send_email",
+                "recipient": recipient,
+                "subject": subject,
+                "result": result,
+                "success": True
+            }
+            
+        elif action_type == "get_unread_emails":
+            log_or_print("Getting unread emails...", api_mode)
+            result = call_gmail_mcp_server("get_unread_emails", user_id)
+            return {
+                "action": "get_unread_emails",
+                "result": result,
+                "success": True
+            }
+            
+        elif action_type == "read_email":
+            email_id = params.get("email_id")
+            if not email_id:
+                return {
+                    "error": "No email ID provided. Please specify an email ID to read.",
+                    "success": False
+                }
+            log_or_print(f"Reading email: {email_id}", api_mode)
+            result = call_gmail_mcp_server("read_email", user_id, email_id=email_id)
+            return {
+                "action": "read_email",
+                "email_id": email_id,
+                "result": result,
+                "success": True
+            }
+            
+        elif action_type == "trash_email":
+            email_id = params.get("email_id")
+            if not email_id:
+                return {
+                    "error": "No email ID provided. Please specify an email ID to trash.",
+                    "success": False
+                }
+            log_or_print(f"Trashing email: {email_id}", api_mode)
+            result = call_gmail_mcp_server("trash_email", user_id, email_id=email_id)
+            return {
+                "action": "trash_email",
+                "email_id": email_id,
+                "result": result,
+                "success": True
+            }
+            
+        elif action_type == "mark_email_as_read":
+            email_id = params.get("email_id")
+            if not email_id:
+                return {
+                    "error": "No email ID provided. Please specify an email ID to mark as read.",
+                    "success": False
+                }
+            log_or_print(f"Marking email as read: {email_id}", api_mode)
+            result = call_gmail_mcp_server("mark_email_as_read", user_id, email_id=email_id)
+            return {
+                "action": "mark_email_as_read",
+                "email_id": email_id,
+                "result": result,
+                "success": True
+            }
+            
+        elif action_type == "open_email":
+            email_id = params.get("email_id")
+            if not email_id:
+                return {
+                    "error": "No email ID provided. Please specify an email ID to open.",
+                    "success": False
+                }
+            log_or_print(f"Opening email in browser: {email_id}", api_mode)
+            result = call_gmail_mcp_server("open_email", user_id, email_id=email_id)
+            return {
+                "action": "open_email",
+                "email_id": email_id,
+                "result": result,
+                "success": True
+            }
+            
+        else:
+            return {
+                "error": f"❌ Action '{action_type}' not yet implemented or not recognized.",
+                "success": False
+            }
+        
+    except Exception as e:
+        logger.error(f"Error in Gmail action: {str(e)}")
+        return {
+            "error": f"❌ Error executing Gmail action: {str(e)}",
+            "success": False
+        }
+
+def tiktok_action(user_id: str, question: str, api_mode: bool = False) -> Dict[str, Any]:
+    """
+    Main TikTok action orchestrator.
+    Analyzes the question and performs the appropriate TikTok action.
+    """
+    try:
+        log_or_print(f"Processing: '{question}' for user {user_id}", api_mode)
+        
+        # Analyze the question to determine action
+        service, action_type, params = analyze_tiktok_question(question.lower())
+        
+        log_or_print(f"Detected action: {action_type}", api_mode)
+        log_or_print(f"Parameters: {params}", api_mode)
+        
+        # Execute the appropriate action
+        if action_type == "search_videos":
+            query = params.get("query", question)
+            log_or_print(f"Searching TikTok for: {query}", api_mode)
+            result = call_tiktok_mcp_server("tiktok_search", user_id, query=query)
+            return {
+                "action": "search_videos",
+                "query": query,
+                "result": result,
+                "success": True
+            }
+            
+        elif action_type == "get_post_details":
+            tiktok_url = params.get("tiktok_url")
+            if not tiktok_url:
+                return {
+                    "error": "No TikTok URL or video ID provided. Please specify a TikTok URL or video ID.",
+                    "success": False
+                }
+            log_or_print(f"Getting TikTok post details: {tiktok_url}", api_mode)
+            result = call_tiktok_mcp_server("tiktok_get_post_details", user_id, tiktok_url=tiktok_url)
+            return {
+                "action": "get_post_details",
+                "tiktok_url": tiktok_url,
+                "result": result,
+                "success": True
+            }
+            
+        elif action_type == "get_subtitle":
+            tiktok_url = params.get("tiktok_url")
+            language_code = params.get("language_code")
+            if not tiktok_url:
+                return {
+                    "error": "No TikTok URL or video ID provided. Please specify a TikTok URL or video ID.",
+                    "success": False
+                }
+            log_or_print(f"Getting TikTok subtitle: {tiktok_url}", api_mode)
+            if language_code:
+                log_or_print(f"Language: {language_code}", api_mode)
+            result = call_tiktok_mcp_server("tiktok_get_subtitle", user_id, 
+                                         tiktok_url=tiktok_url, 
+                                         language_code=language_code)
+            return {
+                "action": "get_subtitle",
+                "tiktok_url": tiktok_url,
+                "language_code": language_code,
+                "result": result,
+                "success": True
+            }
+            
+        elif action_type == "get_credentials_status":
+            log_or_print("Checking TikTok credentials status...", api_mode)
+            result = call_tiktok_mcp_server("get_tiktok_credentials_status", user_id)
+            return {
+                "action": "get_credentials_status",
+                "result": result,
+                "success": True
+            }
+            
+        else:
+            return {
+                "error": f"Action '{action_type}' not yet implemented or not recognized.",
+                "success": False
+            }
+        
+    except Exception as e:
+        logger.error(f"Error in TikTok action: {str(e)}")
+        return {
+            "error": f"Error executing TikTok action: {str(e)}",
+            "success": False
+        }
+
 # ---------------------------
 # Command Line Interface
 # ---------------------------
 
 def main():
     """Main function for command line interface."""
-    parser = argparse.ArgumentParser(description="MCP Client Orchestrator (YouTube, X, Google Ads, Facebook & Shopify)")
+    parser = argparse.ArgumentParser(description="MCP Client Orchestrator (YouTube, X, Google Ads, Facebook, Shopify, Gmail & TikTok)")
     parser.add_argument("-q", "--question", help="Question or command to execute")
     parser.add_argument("--user-id", required=True, help="User ID to get credentials for")
     parser.add_argument("--check-token", action="store_true", help="Check YouTube token status only")
     parser.add_argument("--refresh-token", action="store_true", help="Refresh YouTube token only")
     parser.add_argument("--create-token", action="store_true", help="Create new YouTube token using OAuth2 flow")
-    parser.add_argument("--service", choices=["youtube", "x", "google_ads", "facebook", "shopify", "auto"], default="auto", help="Specify service (auto detects by default)")
+    parser.add_argument("--service", choices=["youtube", "x", "google_ads", "facebook", "shopify", "gmail", "tiktok", "auto"], default="auto", help="Specify service (auto detects by default)")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose logging")
+    parser.add_argument("--api-mode", action="store_true", help="Output only human-readable text for API usage (logs go to file)")
+    parser.add_argument("--human-readable", action="store_true", help="Convert JSON result to human-readable format using OpenAI")
     
     args = parser.parse_args()
     
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
-    
+
+    # Setup file logging for API mode
+    if args.api_mode:
+        setup_file_logging()
+
     user_id = args.user_id
     
     try:
@@ -1486,7 +2345,10 @@ def main():
         
         # Execute action based on service detection or specified service
         if not args.question:
-            print("❌ Error: Question is required")
+            if args.api_mode:
+                print(json.dumps({"success": False, "error": "Question is required"}, ensure_ascii=False))
+            else:
+                print("❌ Error: Question is required")
             sys.exit(1)
         
         # Determine which service to use
@@ -1507,37 +2369,71 @@ def main():
         elif args.service == "shopify":
             service = "shopify"
             _, action_type, params = analyze_shopify_question(args.question.lower())
+        elif args.service == "gmail":
+            service = "gmail"
+            _, action_type, params = analyze_gmail_question(args.question.lower())
+        elif args.service == "tiktok":
+            service = "tiktok"
+            _, action_type, params = analyze_tiktok_question(args.question.lower())
         else:
-            print(f"❌ Error: Unknown service '{args.service}'")
+            if args.api_mode:
+                print(json.dumps({"success": False, "error": f"Unknown service '{args.service}'"}, ensure_ascii=False))
+            else:
+                print(f"❌ Error: Unknown service '{args.service}'")
             sys.exit(1)
         
-        print(f"🎯 Detected service: {service}")
+        if not args.api_mode:
+            print(f"🎯 Detected service: {service}")
         
         # Execute the appropriate action
         if service == "youtube":
-            result = youtube_action(user_id, args.question)
+            result = youtube_action(user_id, args.question, args.api_mode)
         elif service == "x":
-            result = x_action(user_id, args.question)
+            result = x_action(user_id, args.question, args.api_mode)
         elif service == "google_ads":
-            result = google_ads_action(user_id, args.question)
+            result = google_ads_action(user_id, args.question, args.api_mode)
         elif service == "facebook":
-            result = facebook_action(user_id, args.question)
+            result = facebook_action(user_id, args.question, args.api_mode)
         elif service == "shopify":
-            result = shopify_action(user_id, args.question)
+            result = shopify_action(user_id, args.question, args.api_mode)
+        elif service == "gmail":
+            result = gmail_action(user_id, args.question, args.api_mode)
+        elif service == "tiktok":
+            result = tiktok_action(user_id, args.question, args.api_mode)
         else:
-            print(f"❌ Error: Unknown service '{service}'")
+            if args.api_mode:
+                print(json.dumps({"success": False, "error": f"Unknown service '{service}'"}, ensure_ascii=False))
+            else:
+                print(f"❌ Error: Unknown service '{service}'")
             sys.exit(1)
         
         if result.get("success"):
-            print("\n🎉 Success!")
-            print("=" * 50)
-            print(json.dumps(result, indent=2, ensure_ascii=False))
+            if args.api_mode:
+                # Convert to human-readable format and output only that
+                human_readable = convert_to_human_readable(result, args.question)
+                print(human_readable)
+            else:
+                print("\n🎉 Success!")
+                print("=" * 50)
+                print(json.dumps(result, indent=2, ensure_ascii=False))
         else:
-            print(f"\n❌ Failed: {result.get('error', 'Unknown error')}")
+            if args.api_mode:
+                # Convert error to human-readable format
+                error_result = {"success": False, "error": result.get('error', 'Unknown error')}
+                human_readable = convert_to_human_readable(error_result, args.question)
+                print(human_readable)
+            else:
+                print(f"\n❌ Failed: {result.get('error', 'Unknown error')}")
             sys.exit(1)
             
     except Exception as e:
-        print(f"❌ Fatal error: {str(e)}")
+        if args.api_mode:
+            # Convert error to human-readable format
+            error_result = {"success": False, "error": f"Fatal error: {str(e)}"}
+            human_readable = convert_to_human_readable(error_result, args.question if hasattr(args, 'question') else "Unknown request")
+            print(human_readable)
+        else:
+            print(f"❌ Fatal error: {str(e)}")
         sys.exit(1)
 
 if __name__ == "__main__":

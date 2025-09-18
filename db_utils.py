@@ -5,6 +5,7 @@ Centralized database connection and credential retrieval functions
 """
 
 import os
+import json
 import logging
 from typing import Dict, Any, Optional
 from contextlib import contextmanager
@@ -196,6 +197,10 @@ def get_user_credentials(user_id: str, service: str) -> Optional[Dict[str, Any]]
         return get_google_ads_minion_credentials(user_id)
     elif service.lower() == "shopify":
         return get_shopify_minion_credentials(user_id)
+    elif service.lower() == "gmail":
+        return get_gmail_minion_credentials(user_id)
+    elif service.lower() == "tiktok":
+        return get_tiktok_minion_credentials(user_id)
     else:
         logger.error(f"Unknown service: {service}")
         return None
@@ -223,6 +228,14 @@ def update_tokens_in_db(user_id: str, service: str, access_token: str, refresh_t
             return False
     elif service.lower() == "shopify":
         return update_shopify_token_in_db(user_id, access_token)
+    elif service.lower() == "gmail":
+        if refresh_token:
+            return update_gmail_tokens_in_db(user_id, access_token, refresh_token)
+        else:
+            logger.error("Gmail service requires both access and refresh tokens")
+            return False
+    elif service.lower() == "tiktok":
+        return update_tiktok_api_key_in_db(user_id, access_token)
     else:
         logger.error(f"Unknown service: {service}")
         return False
@@ -367,6 +380,101 @@ def update_shopify_token_in_db(user_id: str, new_token: str) -> bool:
         return False
 
 # ---------------------------
+# Gmail Credential Functions
+# ---------------------------
+
+def get_gmail_minion_credentials(user_id: str) -> Optional[Dict[str, Any]]:
+    """Get Gmail minion credentials for a user from the database."""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute("""
+                    SELECT 
+                        em.google_application_credentials,
+                        em.email as gmail_user_email,
+                        i.client_id,
+                        i.client_secret,
+                        i.redirect_uri,
+                        ma.name as agent_masteragent_name,
+                        em.name as minion_name,
+                        em.capabilities
+                    FROM accounts_user u
+                    JOIN agent_masteragent ma ON u.id = ma.user_id
+                    JOIN agent_email_minion em ON ma.id = em.master_agent_id
+                    LEFT JOIN agent_integration i ON em.integration_app_id = i.id
+                    WHERE u.id = %s AND em.is_active = true 
+                    AND em.email_provider = 'gmail'
+                    ORDER BY em.id DESC
+                    LIMIT 1
+                """, (user_id,))
+                
+                row = cursor.fetchone()
+                if row:
+                    creds = dict(row)
+                    
+                    # Extract tokens from google_application_credentials JSON
+                    google_creds = creds.get('google_application_credentials', {})
+                    if isinstance(google_creds, dict):
+                        creds['gmail_access_token'] = google_creds.get('token')
+                        creds['gmail_refresh_token'] = google_creds.get('refresh_token')
+                        creds['gmail_user_email'] = creds.get('gmail_user_email') or google_creds.get('account')
+                    
+                    return creds
+                return None
+    except Exception as e:
+        logger.error(f"Error getting Gmail minion credentials for user {user_id}: {e}")
+        return None
+
+def update_gmail_tokens_in_db(user_id: str, access_token: str, refresh_token: str) -> bool:
+    """Update Gmail access token and refresh token in database JSON field."""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                # First get the current google_application_credentials
+                cursor.execute("""
+                    SELECT google_application_credentials 
+                    FROM agent_email_minion 
+                    WHERE master_agent_id IN (
+                        SELECT ma.id FROM agent_masteragent ma 
+                        WHERE ma.user_id = %s
+                    ) AND is_active = true AND email_provider = 'gmail'
+                    ORDER BY id DESC
+                    LIMIT 1
+                """, (user_id,))
+                
+                row = cursor.fetchone()
+                if not row:
+                    logger.error(f"No Gmail minion found for user {user_id}")
+                    return False
+                
+                # Update the JSON field with new tokens
+                current_creds = row[0] or {}
+                if isinstance(current_creds, dict):
+                    current_creds['token'] = access_token
+                    current_creds['refresh_token'] = refresh_token
+                else:
+                    # If it's not a dict, create a new one
+                    current_creds = {
+                        'token': access_token,
+                        'refresh_token': refresh_token
+                    }
+                
+                # Update the database with the modified JSON
+                cursor.execute("""
+                    UPDATE agent_email_minion 
+                    SET google_application_credentials = %s, updated_at = NOW()
+                    WHERE master_agent_id IN (
+                        SELECT ma.id FROM agent_masteragent ma 
+                        WHERE ma.user_id = %s
+                    ) AND is_active = true AND email_provider = 'gmail'
+                """, (json.dumps(current_creds), user_id))
+                conn.commit()
+                return True
+    except Exception as e:
+        logger.error(f"Error updating Gmail tokens in database: {e}")
+        return False
+
+# ---------------------------
 # Google Ads Credential Functions
 # ---------------------------
 
@@ -420,4 +528,71 @@ def update_google_ads_tokens_in_db(user_id: str, refresh_token: str) -> bool:
                 return True
     except Exception as e:
         logger.error(f"Error updating Google Ads tokens in database: {e}")
+        return False
+
+# ---------------------------
+# TikTok Credential Functions
+# ---------------------------
+
+def get_tiktok_minion_credentials(user_id: str) -> Optional[Dict[str, Any]]:
+    """Get TikTok minion credentials for a user from the database."""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                # Try to get credentials directly - this will fail gracefully if table doesn't exist
+                cursor.execute("""
+                    SELECT 
+                        tm.tikneuron_mcp_api_key as tiktok_api_key,
+                        tm.connection_details,
+                        ma.name as agent_masteragent_name,
+                        tm.name as minion_name,
+                        tm.capabilities
+                    FROM accounts_user u
+                    JOIN agent_masteragent ma ON u.id = ma.user_id
+                    JOIN agent_tiktok_minion tm ON ma.id = tm.master_agent_id
+                    WHERE u.id = %s AND tm.is_active = true
+                    ORDER BY tm.id DESC
+                    LIMIT 1
+                """, (user_id,))
+                
+                row = cursor.fetchone()
+                if row:
+                    return dict(row)
+                else:
+                    logger.warning(f"No active TikTok minion found for user {user_id}")
+                    return None
+    except Exception as e:
+        logger.error(f"Error getting TikTok minion credentials for user {user_id}: {e}")
+        return None
+
+def update_tiktok_api_key_in_db(user_id: str, api_key: str) -> bool:
+    """Update TikTok API key in database."""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                # First check if the TikTok minion table exists
+                cursor.execute("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables 
+                        WHERE table_name = 'agent_tiktok_minion'
+                    )
+                """)
+                table_exists = cursor.fetchone()[0]
+                
+                if not table_exists:
+                    logger.warning("TikTok minion table does not exist in database")
+                    return False
+                
+                cursor.execute("""
+                    UPDATE agent_tiktok_minion 
+                    SET tikneuron_mcp_api_key = %s, updated_at = NOW()
+                    WHERE master_agent_id IN (
+                        SELECT ma.id FROM agent_masteragent ma 
+                        WHERE ma.user_id = %s
+                    ) AND is_active = true
+                """, (api_key, user_id))
+                conn.commit()
+                return True
+    except Exception as e:
+        logger.error(f"Error updating TikTok API key in database: {e}")
         return False
