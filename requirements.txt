@@ -40,7 +40,7 @@ pydantic_core==2.33.2
 Pygments==2.19.2
 python-dotenv==1.1.1
 python-multipart==0.0.20
-pywin32==311
+#pywin32==311
 PyYAML==6.0.2
 referencing==0.36.2
 requests==2.32.5
@@ -59,4 +59,3 @@ typing_extensions==4.14.1
 urllib3==2.5.0
 uvicorn==0.35.0
 langchain_openai
-mcp_use

@@ -2,7 +2,7 @@
 """
 YouTube MCP Server - Simple version
 """
-
+import asyncio
 import os
 import json
 import logging
@@ -11,7 +11,7 @@ from typing import Dict, Any, Optional, List
 from contextlib import contextmanager
 
 # MCP imports
-from mcp.server import Server
+from mcp.server.fastmcp import FastMCP
 from mcp.types import CallToolResult, TextContent
 
 # Load .env file
@@ -32,7 +32,7 @@ if parent_dir not in sys.path:
 from db_utils import get_youtube_minion_credentials, update_youtube_token_in_db, update_youtube_tokens_in_db
 
 # Initialize MCP server
-mcp = Server("youtube-mcp-server")
+mcp = FastMCP("youtube-mcp-server")
 
 def get_youtube_credentials(user_id: str) -> Optional[Dict[str, Any]]:
     """Get YouTube credentials for a user."""
@@ -297,7 +297,7 @@ def channel_analytics_api(token: str, creds: Dict[str, Any]) -> Dict[str, Any]:
         "total_videos": item["statistics"].get("videoCount", "0")
     }
 
-@mcp.call_tool()
+@mcp.tool()
 def get_user_credentials(user_id: str):
     """Get YouTube credentials for a user."""
     try:
@@ -333,7 +333,7 @@ def get_user_credentials(user_id: str):
             )]
         )
 
-@mcp.call_tool()
+@mcp.tool()
 def list_videos(user_id: str):
     """
     Fetch the user's YouTube channel videos with comprehensive details from the YouTube Data API.
@@ -384,7 +384,7 @@ def list_videos(user_id: str):
             )]
         )
 
-@mcp.call_tool()
+@mcp.tool()
 def search_videos(user_id: str, query: str):
     """
     Search for videos in the user's YouTube channel using a specific query from the YouTube Data API.
@@ -435,7 +435,7 @@ def search_videos(user_id: str, query: str):
             )]
         )
 
-@mcp.call_tool()
+@mcp.tool()
 def get_video_analytics(user_id: str, video_id: str):
     """
     Retrieve detailed analytics and statistics for a specific video from the YouTube Data API.
@@ -488,7 +488,7 @@ def get_video_analytics(user_id: str, video_id: str):
             )]
         )
 
-@mcp.call_tool()
+@mcp.tool()
 def get_channel_analytics(user_id: str):
     """
     Retrieve comprehensive analytics and statistics for the user's YouTube channel from the YouTube Data API.
@@ -532,13 +532,4 @@ def get_channel_analytics(user_id: str):
         )
 
 if __name__ == "__main__":
-    import asyncio
-    from mcp.server.stdio import stdio_server
-    
-    async def main():
-        async with stdio_server() as (read_stream, write_stream):
-            await mcp.run(read_stream, write_stream, None)
-    
-    asyncio.run(main())
-    # asyncio.run(mcp.run())
-    # list_videos('842a4951-5d0c-40c6-8488-732626d5a3c0')
+    asyncio.run(mcp.run())
