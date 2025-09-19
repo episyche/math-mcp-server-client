@@ -11,7 +11,8 @@ from typing import Dict, Any, Optional, List, Sequence
 from datetime import datetime
 
 # MCP imports
-from mcp.server import Server
+import asyncio
+from mcp.server.fastmcp import FastMCP
 from mcp.types import CallToolResult, TextContent
 
 # Load .env file
@@ -26,7 +27,7 @@ logger = logging.getLogger(__name__)
 from db_utils import get_facebook_minion_credentials, update_facebook_token_in_db
 
 # Initialize MCP server
-mcp = Server("facebook-mcp-server")
+mcp = FastMCP("facebook-mcp-server")
 
 def get_facebook_credentials(user_id: str) -> Optional[Dict[str, Any]]:
     """Get Facebook credentials for a user."""
@@ -210,7 +211,7 @@ def get_first_page_id_api(token: str, creds: Dict[str, Any]) -> str:
         raise RuntimeError("No pages found for this user")
 
 # MCP Tool Functions
-@mcp.call_tool()
+@mcp.tool()
 def get_user_credentials(user_id: str):
     """Get Facebook credentials for a user."""
     try:
@@ -250,7 +251,7 @@ def get_user_credentials(user_id: str):
             )]
         )
 
-@mcp.call_tool()
+@mcp.tool()
 def get_user_info(user_id: str):
     """Get user information from Facebook."""
     try:
@@ -272,7 +273,7 @@ def get_user_info(user_id: str):
             )]
         )
 
-@mcp.call_tool()
+@mcp.tool()
 def get_ad_accounts(user_id: str):
     """Get ad accounts for the user."""
     try:
@@ -294,7 +295,7 @@ def get_ad_accounts(user_id: str):
             )]
         )
 
-@mcp.call_tool()
+@mcp.tool()
 def get_pages(user_id: str):
     """Get pages for the user."""
     try:
@@ -316,7 +317,7 @@ def get_pages(user_id: str):
             )]
         )
 
-@mcp.call_tool()
+@mcp.tool()
 def get_campaigns(user_id: str, ad_account_id: str, fields: List[str] = None):
     """Get campaigns for an ad account."""
     try:
@@ -339,7 +340,7 @@ def get_campaigns(user_id: str, ad_account_id: str, fields: List[str] = None):
             )]
         )
 
-@mcp.call_tool()
+@mcp.tool()
 def get_campaign_insights(user_id: str, campaign_id: str, fields: List[str] = None, date_preset: str = None, time_range: Dict = None):
     """Get insights for a campaign."""
     try:
@@ -362,7 +363,7 @@ def get_campaign_insights(user_id: str, campaign_id: str, fields: List[str] = No
             )]
         )
 
-@mcp.call_tool()
+@mcp.tool()
 def create_campaign(user_id: str, ad_account_id: str, name: str, objective: str, status: str = "PAUSED", special_ad_categories: List[str] = None, buying_type: str = "AUCTION"):
     """Create a new campaign."""
     try:
@@ -396,7 +397,7 @@ def create_campaign(user_id: str, ad_account_id: str, name: str, objective: str,
             )]
         )
 
-@mcp.call_tool()
+@mcp.tool()
 def get_adsets(user_id: str, ad_account_id: str, fields: List[str] = None):
     """Get ad sets for an ad account."""
     try:
@@ -419,7 +420,7 @@ def get_adsets(user_id: str, ad_account_id: str, fields: List[str] = None):
             )]
         )
 
-@mcp.call_tool()
+@mcp.tool()
 def get_ads(user_id: str, ad_account_id: str, fields: List[str] = None):
     """Get ads for an ad account."""
     try:
@@ -442,7 +443,7 @@ def get_ads(user_id: str, ad_account_id: str, fields: List[str] = None):
             )]
         )
 
-@mcp.call_tool()
+@mcp.tool()
 def get_page_feed(user_id: str, page_id: str = None, fields: List[str] = None):
     """Get page feed posts."""
     try:
@@ -469,7 +470,7 @@ def get_page_feed(user_id: str, page_id: str = None, fields: List[str] = None):
             )]
         )
 
-@mcp.call_tool()
+@mcp.tool()
 def post_to_page(user_id: str, message: str, page_id: str = None, link: str = None):
     """Post to page feed."""
     try:
@@ -501,7 +502,7 @@ def post_to_page(user_id: str, message: str, page_id: str = None, link: str = No
             )]
         )
 
-@mcp.call_tool()
+@mcp.tool()
 def get_first_page_id(user_id: str):
     """Get the first available page ID for the user."""
     try:
@@ -523,7 +524,7 @@ def get_first_page_id(user_id: str):
             )]
         )
 
-@mcp.call_tool()
+@mcp.tool()
 def get_page_insights(user_id: str, page_id: str = None, metrics: List[str] = None):
     """Get page insights."""
     try:
@@ -555,4 +556,4 @@ def get_page_insights(user_id: str, page_id: str = None, metrics: List[str] = No
         )
 
 if __name__ == "__main__":
-    mcp.run()
+    asyncio.run(mcp.run())

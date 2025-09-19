@@ -2,17 +2,17 @@
 """
 X (Twitter) MCP Server - Database credentials version
 """
-
+import asyncio
 import os
 import json
 import logging
-import requests
 import base64
-from typing import Dict, Any, Optional
+import requests
+from typing import Dict, Any, Optional, List
 from contextlib import contextmanager
 
 # MCP imports
-from mcp.server import Server
+from mcp.server.fastmcp import FastMCP
 from mcp.types import CallToolResult, TextContent
 
 # Load .env file
@@ -24,14 +24,23 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Import common database utilities
-from db_utils import get_db_connection, get_x_minion_credentials, update_x_tokens_in_db
+import sys
+import os
+# Add parent directory to path
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
+
+# Import common database utilities
+from db_utils import (get_db_connection, get_x_minion_credentials,
+                      update_x_tokens_in_db)
 
 # Default to public Twitter API base if not provided
 BASE_URL = os.getenv("X_BASE_URL") or "https://api.twitter.com"
 API_VERSION = "2"
 
 # Initialize MCP server
-mcp = Server("x-mcp-server")
+mcp = FastMCP("x-mcp-server")
 
 
 def get_x_credentials(user_id: str) -> Optional[Dict[str, Any]]:
@@ -89,7 +98,7 @@ def refresh_authorization(user_id: str) -> Optional[Dict[str, str]]:
 def _url(path):
     return f"{BASE_URL}/{API_VERSION}{path}"
 
-@mcp.call_tool()
+@mcp.tool()
 def get_user_credentials(user_id: str):
     """Get X (Twitter) credentials for a user."""
     try:
@@ -126,7 +135,7 @@ def get_user_credentials(user_id: str):
             )]
         )
 
-@mcp.call_tool()
+@mcp.tool()
 def create_post(user_id: str, text: str):
     """Create a new post on X (Twitter)."""
     try:
@@ -199,7 +208,7 @@ def create_post(user_id: str, text: str):
             )]
         )
 
-@mcp.call_tool()
+@mcp.tool()
 def delete_post(user_id: str, tweet_id: str):
     """Delete a post on X (Twitter)."""
     try:
@@ -254,7 +263,7 @@ def delete_post(user_id: str, tweet_id: str):
             )]
         )
 
-@mcp.call_tool()
+@mcp.tool()
 def get_post_by_id(user_id: str, tweet_id: str):
     """Get a specific post by ID from X (Twitter)."""
     try:
@@ -309,7 +318,7 @@ def get_post_by_id(user_id: str, tweet_id: str):
             )]
         )
 
-@mcp.call_tool()
+@mcp.tool()
 def get_my_user_info(user_id: str):
     """Get current user information from X (Twitter)."""
     try:
@@ -364,7 +373,7 @@ def get_my_user_info(user_id: str):
             )]
         )
 
-@mcp.call_tool()
+@mcp.tool()
 def get_user_by_username(user_id: str, username: str):
     """Get user information by username from X (Twitter)."""
     try:
@@ -419,7 +428,7 @@ def get_user_by_username(user_id: str, username: str):
             )]
         )
 
-@mcp.call_tool()
+@mcp.tool()
 def search_recent_tweets(user_id: str, query: str, max_results: int = 10):
     """Search for recent tweets on X (Twitter)."""
     try:
@@ -477,7 +486,7 @@ def search_recent_tweets(user_id: str, query: str, max_results: int = 10):
 
 if __name__ == "__main__":
     # Uses stdio transport by default when launched by an MCP-capable client
-    mcp.run()
+    asyncio.run(mcp.run())
 
 
     

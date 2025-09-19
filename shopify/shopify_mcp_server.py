@@ -4,16 +4,18 @@ Shopify MCP Server - Database credentials version
 Converts the TypeScript Shopify MCP tools to Python with database credential management
 """
 
+import asyncio
 import os
 import json
 import logging
 import requests
-from typing import Dict, Any, Optional, List, Sequence
-from datetime import datetime, timedelta
 import uuid
+from typing import Dict, Any, Optional, List
+from contextlib import contextmanager
+from datetime import datetime, timedelta
 
 # MCP imports
-from mcp.server import Server
+from mcp.server.fastmcp import FastMCP
 from mcp.types import CallToolResult, TextContent
 
 # Load .env file
@@ -25,10 +27,19 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Import common database utilities
+import sys
+import os
+# Add parent directory to path
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
+
+
+# Import common database utilities
 from db_utils import get_shopify_minion_credentials, update_shopify_token_in_db
 
 # Initialize MCP server
-mcp = Server("shopify-mcp-server")
+mcp = FastMCP("shopify-mcp-server")
 
 def get_shopify_credentials(user_id: str) -> Optional[Dict[str, Any]]:
     """Get Shopify credentials for a user."""
@@ -123,7 +134,7 @@ def generate_conversation_id() -> str:
     return str(uuid.uuid4())
 
 # MCP Tool Functions
-@mcp.call_tool()
+@mcp.tool()
 def get_user_credentials(user_id: str):
     """Get Shopify credentials for a user."""
     try:
@@ -161,7 +172,7 @@ def get_user_credentials(user_id: str):
             )]
         )
 
-@mcp.call_tool()
+@mcp.tool()
 def learn_shopify_api(user_id: str, api: str, conversation_id: str = None):
     """Learn about Shopify APIs - MANDATORY FIRST STEP for all other tools."""
     try:
@@ -220,7 +231,7 @@ This tool provides access to the Shopify {api.title()} API. Use the conversation
             )]
         )
 
-@mcp.call_tool()
+@mcp.tool()
 def get_store_analytics(user_id: str, conversation_id: str, include_orders: bool = True, 
                        include_products: bool = True, include_customers: bool = True, 
                        include_inventory: bool = False, date_range: str = "all_time", 
@@ -477,7 +488,7 @@ def get_store_analytics(user_id: str, conversation_id: str, include_orders: bool
             )]
         )
 
-@mcp.call_tool()
+@mcp.tool()
 def get_customers(user_id: str, conversation_id: str, limit: int = 10, query: str = None, 
                  cursor: str = None, include_addresses: bool = True, include_orders: bool = False):
     """Get customers from Shopify Admin API with filtering and pagination."""
@@ -640,7 +651,7 @@ def get_customers(user_id: str, conversation_id: str, limit: int = 10, query: st
             )]
         )
 
-@mcp.call_tool()
+@mcp.tool()
 def get_orders(user_id: str, conversation_id: str, limit: int = 10, status: str = "any", 
                financial_status: str = "any", fulfillment_status: str = "any", 
                created_at_min: str = None, created_at_max: str = None, query: str = None, 
@@ -831,7 +842,7 @@ def get_orders(user_id: str, conversation_id: str, limit: int = 10, status: str 
             )]
         )
 
-@mcp.call_tool()
+@mcp.tool()
 def get_products(user_id: str, conversation_id: str, limit: int = 10, status: str = "any", 
                 vendor: str = None, product_type: str = None, tag: str = None, 
                 query: str = None, cursor: str = None, include_variants: bool = True, 
@@ -1039,7 +1050,7 @@ def get_products(user_id: str, conversation_id: str, limit: int = 10, status: st
             )]
         )
 
-@mcp.call_tool()
+@mcp.tool()
 def get_inventory(user_id: str, conversation_id: str, limit: int = 10, location_id: str = None, 
                  product_id: str = None, variant_id: str = None, low_stock: bool = False, 
                  out_of_stock: bool = False, cursor: str = None):
@@ -1216,7 +1227,7 @@ def get_inventory(user_id: str, conversation_id: str, limit: int = 10, location_
             )]
         )
 
-@mcp.call_tool()
+@mcp.tool()
 def get_store_details(user_id: str, conversation_id: str):
     """Get comprehensive store details from Shopify Admin API."""
     try:
@@ -1348,5 +1359,69 @@ def get_store_details(user_id: str, conversation_id: str):
             )]
         )
 
+# ---------------------------
+# System Prompt for Shopify MCP Server
+# ---------------------------
+
+def get_shopify_system_prompt() -> str:
+    """Get the system prompt for Shopify MCP Server operations."""
+    return """
+    You are a Shopify assistant with access to the 'Shopify MCP Server'.
+    This server provides tools to perform Shopify store operations using the Shopify Admin API.
+
+    ## Shopify Server Rules:
+    1. Only use tools provided by MCP discovery.
+    2. Never invent tool names — only use tools provided by MCP discovery.
+    3. Always return structured results from tools. Summarize only if the user specifically asks for a summary.
+    4. For Shopify operations, always require a user_id parameter for authentication.
+    5. When analyzing store data, provide comprehensive analytics and insights.
+    6. For product/order/customer operations, specify appropriate filters and limits.
+    7. Shopify operations include: store analytics, customer management, order processing, product catalog, and inventory management.
+    8. Handle authentication errors gracefully - inform users if re-authentication is needed.
+    9. For data listings, return comprehensive information including IDs, names, dates, and relevant metrics.
+    10. When users ask about "my store" or "my products", use the appropriate tools with their user_id.
+    11. IMPORTANT: Extract user_id from the user's query. Look for patterns like "user_id 'value'" or "for user_id 'value'" and use that value.
+    12. If no user_id is provided in the query, ask the user to provide one.
+    13. For Shopify operations, always specify which action you're performing (get, analyze, search, etc.).
+    14. When analyzing data, provide meaningful insights and trends.
+    15. For inventory operations, highlight low stock and out-of-stock items.
+    16. Always use conversation_id for all Shopify operations after the initial learn_shopify_api call.
+
+    ## Available Shopify Operations:
+    - get_user_credentials: Check Shopify credentials status
+    - learn_shopify_api: MANDATORY FIRST STEP - Learn about Shopify APIs and get conversation_id
+    - get_store_analytics: Get comprehensive store analytics and statistics
+    - get_customers: Retrieve customer information with filtering
+    - get_orders: Get order information with status filtering
+    - get_products: Retrieve product catalog with search and filtering
+    - get_inventory: Get inventory levels and stock information
+    - get_store_details: Get comprehensive store configuration details
+
+    ## Authentication:
+    - All operations require valid Shopify credentials stored in the database
+    - User_id is used to retrieve the appropriate credentials
+    - If authentication fails, inform the user to check their credentials
+    - Shopify API requires access token, store domain, and API version
+
+    ## Data Analysis:
+    - Store analytics include orders, products, customers, and revenue metrics
+    - Date ranges can be filtered (today, yesterday, last_7_days, last_30_days, last_90_days, all_time)
+    - Inventory analysis highlights stock levels and availability
+    - Customer analysis includes spending patterns and order history
+
+    ## Conversation Management:
+    - ALWAYS call learn_shopify_api first to get conversation_id
+    - Use the returned conversation_id in ALL subsequent Shopify operations
+    - Without conversation_id, all other Shopify tools will return errors
+
+    ## Error Handling:
+    - Handle API rate limits gracefully
+    - Provide clear error messages for authentication failures
+    - Suggest re-authentication when tokens are expired
+    - Inform users about Shopify API limitations and quotas
+    - Handle store permission errors appropriately
+    - Guide users through the conversation_id requirement
+    """
+
 if __name__ == "__main__":
-    mcp.run()
+    asyncio.run(mcp.run())

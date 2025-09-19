@@ -17,7 +17,8 @@ from pytz import country_timezones
 from countryinfo import CountryInfo
 
 # MCP imports
-from mcp.server import Server
+import asyncio
+from mcp.server.fastmcp import FastMCP
 from mcp.types import CallToolResult, TextContent
 
 # Google Ads imports
@@ -25,6 +26,12 @@ from google.ads.googleads.client import GoogleAdsClient
 from google.ads.googleads.errors import GoogleAdsException
 
 # Import common database utilities
+import sys
+import os
+# Add parent directory to path
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
 from db_utils import get_google_ads_minion_credentials, update_google_ads_tokens_in_db
 
 # Load .env file
@@ -35,7 +42,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Initialize MCP server
-mcp = Server("google-ads-mcp-server")
+mcp = FastMCP("google-ads-mcp-server")
 
 def get_google_ads_credentials(user_id: str) -> Optional[Dict[str, Any]]:
     """Get Google Ads credentials for a user."""
@@ -264,7 +271,7 @@ def add_ad_group_main(client, customer_id, campaign_id):
         logger.error(f"Error adding ad group: {e}")
         return {"status": "error", "message": str(e)}
 
-@mcp.call_tool()
+@mcp.tool()
 def get_user_credentials(user_id: str):
     """Get Google Ads credentials for a user."""
     try:
@@ -302,7 +309,7 @@ def get_user_credentials(user_id: str):
             )]
         )
 
-@mcp.call_tool()
+@mcp.tool()
 def create_customer(user_id: str, manager_customer_id: str, country_code: str):
     """Create a new customer under a manager account."""
     try:
@@ -368,7 +375,7 @@ def create_customer(user_id: str, manager_customer_id: str, country_code: str):
             )]
         )
 
-@mcp.call_tool()
+@mcp.tool()
 def add_campaign(user_id: str, customer_id: str):
     """Add a new campaign."""
     try:
@@ -413,7 +420,7 @@ def add_campaign(user_id: str, customer_id: str):
             )]
         )
 
-@mcp.call_tool()
+@mcp.tool()
 def remove_campaign(user_id: str, customer_id: str, campaign_id: str):
     """Remove a campaign."""
     try:
@@ -459,7 +466,7 @@ def remove_campaign(user_id: str, customer_id: str, campaign_id: str):
             )]
         )
 
-@mcp.call_tool()
+@mcp.tool()
 def get_campaign(user_id: str, customer_id: str):
     """Get campaign information."""
     try:
@@ -504,7 +511,7 @@ def get_campaign(user_id: str, customer_id: str):
             )]
         )
 
-@mcp.call_tool()
+@mcp.tool()
 def add_ad_group(user_id: str, customer_id: str, campaign_id: str):
     """Add an ad group to a campaign."""
     try:
@@ -550,7 +557,7 @@ def add_ad_group(user_id: str, customer_id: str, campaign_id: str):
             )]
         )
 
-@mcp.call_tool()
+@mcp.tool()
 def get_all_accounts(user_id: str, customer_id: str):
     """Get all accessible accounts."""
     try:
@@ -615,7 +622,7 @@ def get_all_accounts(user_id: str, customer_id: str):
             )]
         )
 
-@mcp.call_tool()
+@mcp.tool()
 def get_all_client_accounts(user_id: str, manager_id: str):
     """Get all client accounts under a manager."""
     try:
@@ -681,5 +688,63 @@ def get_all_client_accounts(user_id: str, manager_id: str):
             )]
         )
 
+# ---------------------------
+# System Prompt for Google Ads MCP Server
+# ---------------------------
+
+def get_google_ads_system_prompt() -> str:
+    """Get the system prompt for Google Ads MCP Server operations."""
+    return """
+    You are a Google Ads assistant with access to the 'Google Ads MCP Server'.
+    This server provides tools to perform Google Ads operations using the Google Ads API.
+
+    ## Google Ads Server Rules:
+    1. Only use tools provided by MCP discovery.
+    2. Never invent tool names — only use tools provided by MCP discovery.
+    3. Always return structured results from tools. Summarize only if the user specifically asks for a summary.
+    4. For Google Ads operations, always require a user_id parameter for authentication.
+    5. When creating campaigns, provide clear campaign details and target customer IDs.
+    6. For campaign management, specify the exact campaign_id when requesting specific campaign operations.
+    7. Google Ads operations include: creating customers, managing campaigns, ad groups, and account management.
+    8. Handle authentication errors gracefully - inform users if re-authentication is needed.
+    9. For account listings, return comprehensive data including customer IDs, names, and manager status.
+    10. When users ask about "my accounts" or "my campaigns", use the appropriate tools with their user_id.
+    11. IMPORTANT: Extract user_id from the user's query. Look for patterns like "user_id 'value'" or "for user_id 'value'" and use that value.
+    12. If no user_id is provided in the query, ask the user to provide one.
+    13. For Google Ads operations, always specify which action you're performing (create, get, remove, etc.).
+    14. When creating customers, ensure proper country codes and manager account relationships.
+    15. For campaign operations, provide clear campaign names and status information.
+    16. Always confirm destructive actions (like removing campaigns) before executing them.
+
+    ## Available Google Ads Operations:
+    - get_user_credentials: Check Google Ads credentials status
+    - create_customer: Create new customer accounts under manager accounts
+    - add_campaign: Create new advertising campaigns
+    - remove_campaign: Delete existing campaigns (destructive action)
+    - get_campaign: Retrieve campaign information and statistics
+    - add_ad_group: Create ad groups within campaigns
+    - get_all_accounts: List all accessible Google Ads accounts
+    - get_all_client_accounts: Get client accounts under a manager account
+
+    ## Authentication:
+    - All operations require valid Google Ads credentials stored in the database
+    - User_id is used to retrieve the appropriate credentials
+    - If authentication fails, inform the user to check their credentials
+    - Google Ads API requires developer token, client credentials, and customer IDs
+
+    ## Account Management:
+    - Manager accounts can create and manage client accounts
+    - Customer IDs are required for most operations
+    - Country codes determine currency and timezone settings
+    - Campaign budgets and bidding strategies must be configured
+
+    ## Error Handling:
+    - Handle API rate limits gracefully
+    - Provide clear error messages for authentication failures
+    - Suggest re-authentication when tokens are expired
+    - Inform users about Google Ads API limitations and quotas
+    - Handle account permission errors appropriately
+    """
+
 if __name__ == "__main__":
-    mcp.run()
+    asyncio.run(mcp.run())

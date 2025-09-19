@@ -1,32 +1,37 @@
 from __future__ import annotations
 
+import asyncio
+import base64
 import io
 import logging
 import os
 import sys
-import asyncio
-import base64
-from typing import List, Dict, Any, Optional
-from email.message import EmailMessage
-from email.header import decode_header
+import webbrowser
 from base64 import urlsafe_b64decode
 from email import message_from_bytes
-import webbrowser
+from email.header import decode_header
+from email.message import EmailMessage
+from typing import Any, Dict, List, Optional
 
 import requests
 from dotenv import load_dotenv, set_key
-from mcp.server.fastmcp import FastMCP
-from mcp.types import CallToolResult, TextContent
-
 # Google API imports
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+from mcp.server.fastmcp import FastMCP
+from mcp.types import CallToolResult, TextContent
 
 # Import database utilities
-from db_utils import get_user_credentials, update_tokens_in_db, test_database_connection
+
+# Add parent directory to path
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
+from db_utils import (get_user_credentials, test_database_connection,
+                      update_tokens_in_db)
 
 mcp = FastMCP("GmailServer")
 
@@ -445,9 +450,13 @@ def send_email(recipient_id: str, subject: str, message: str, user_id: str = Non
         return safe_mcp_response(f"❌ Error sending email: {str(e)}")
 
 @mcp.tool()
-def get_unread_emails() -> CallToolResult:
+def get_unread_emails(user_id: str = None) -> CallToolResult:
     """Retrieve unread emails"""
     try:
+        # Initialize service if user_id provided
+        if user_id and not ensure_gmail_service_initialized(user_id):
+            return safe_mcp_response("❌ Failed to initialize Gmail service. Please check your credentials.")
+        
         if not gmail_service:
             return safe_mcp_response("❌ Gmail service not initialized. Please check your credentials.")
         
@@ -494,9 +503,13 @@ def get_unread_emails() -> CallToolResult:
         return safe_mcp_response(f"❌ Error retrieving emails: {str(e)}")
 
 @mcp.tool()
-def read_email(email_id: str) -> CallToolResult:
+def read_email(email_id: str, user_id: str = None) -> CallToolResult:
     """Retrieves given email content"""
     try:
+        # Initialize service if user_id provided
+        if user_id and not ensure_gmail_service_initialized(user_id):
+            return safe_mcp_response("❌ Failed to initialize Gmail service. Please check your credentials.")
+        
         if not gmail_service:
             return safe_mcp_response("❌ Gmail service not initialized. Please check your credentials.")
         
@@ -527,9 +540,13 @@ Content:
         return safe_mcp_response(f"❌ Error reading email: {str(e)}")
 
 @mcp.tool()
-def trash_email(email_id: str) -> CallToolResult:
+def trash_email(email_id: str, user_id: str = None) -> CallToolResult:
     """Moves email to trash. Confirm before moving email to trash."""
     try:
+        # Initialize service if user_id provided
+        if user_id and not ensure_gmail_service_initialized(user_id):
+            return safe_mcp_response("❌ Failed to initialize Gmail service. Please check your credentials.")
+        
         if not gmail_service:
             return safe_mcp_response("❌ Gmail service not initialized. Please check your credentials.")
         
@@ -547,9 +564,13 @@ def trash_email(email_id: str) -> CallToolResult:
         return safe_mcp_response(f"❌ Error moving email to trash: {str(e)}")
 
 @mcp.tool()
-def mark_email_as_read(email_id: str) -> CallToolResult:
+def mark_email_as_read(email_id: str, user_id: str = None) -> CallToolResult:
     """Marks given email as read"""
     try:
+        # Initialize service if user_id provided
+        if user_id and not ensure_gmail_service_initialized(user_id):
+            return safe_mcp_response("❌ Failed to initialize Gmail service. Please check your credentials.")
+        
         if not gmail_service:
             return safe_mcp_response("❌ Gmail service not initialized. Please check your credentials.")
         
@@ -567,9 +588,13 @@ def mark_email_as_read(email_id: str) -> CallToolResult:
         return safe_mcp_response(f"❌ Error marking email as read: {str(e)}")
 
 @mcp.tool()
-def open_email(email_id: str) -> CallToolResult:
+def open_email(email_id: str, user_id: str = None) -> CallToolResult:
     """Open email in browser"""
     try:
+        # Initialize service if user_id provided
+        if user_id and not ensure_gmail_service_initialized(user_id):
+            return safe_mcp_response("❌ Failed to initialize Gmail service. Please check your credentials.")
+        
         if not gmail_service:
             return safe_mcp_response("❌ Gmail service not initialized. Please check your credentials.")
         
@@ -587,28 +612,76 @@ def open_email(email_id: str) -> CallToolResult:
         return safe_mcp_response(f"❌ Error opening email: {str(e)}")
 
 # ---------------------------
+# System Prompt for Gmail MCP Server
+# ---------------------------
+
+def get_gmail_system_prompt() -> str:
+    """Get the system prompt for Gmail MCP Server operations."""
+    return """
+    You are a Gmail assistant with access to the 'Gmail MCP Server'.
+    This server provides tools to perform email operations using the Gmail API.
+
+    ## Gmail Server Rules:
+    1. Only use tools provided by MCP discovery.
+    2. Never invent tool names — only use tools provided by MCP discovery.
+    3. Always return structured results from tools. Summarize only if the user specifically asks for a summary.
+    4. For email operations, always require a user_id parameter for authentication.
+    5. When sending emails, provide clear recipient, subject, and message content.
+    6. For reading emails, specify the exact email_id when requesting specific email content.
+    7. Email operations include: sending, reading, marking as read, trashing, and listing unread emails.
+    8. Handle authentication errors gracefully - inform users if re-authentication is needed.
+    9. For email listings, return comprehensive data including sender, subject, date, and content preview.
+    10. When users ask about "my emails" or "my inbox", use the appropriate tools with their user_id.
+    11. IMPORTANT: Extract user_id from the user's query. Look for patterns like "user_id 'value'" or "for user_id 'value'" and use that value.
+    12. If no user_id is provided in the query, ask the user to provide one.
+    13. For email operations, always specify which action you're performing (send, read, delete, etc.).
+    14. When sending emails, ensure the message content is properly formatted and professional.
+    15. For unread emails, limit results to prevent overwhelming responses (default: 10 emails).
+    16. Always confirm destructive actions (like trashing emails) before executing them.
+
+    ## Available Gmail Operations:
+    - send_email: Send emails to recipients
+    - get_unread_emails: Retrieve unread emails from inbox
+    - read_email: Read specific email content by ID
+    - trash_email: Move emails to trash (destructive action)
+    - mark_email_as_read: Mark emails as read
+    - open_email: Open emails in browser
+
+    ## Authentication:
+    - All operations require valid Gmail credentials stored in the database
+    - User_id is used to retrieve the appropriate credentials for each user
+    - The server initializes authentication dynamically when tools are called with user_id
+    - If authentication fails, inform the user to check their credentials
+
+    ## Error Handling:
+    - Handle API rate limits gracefully
+    - Provide clear error messages for authentication failures
+    - Suggest re-authentication when tokens are expired
+    - Inform users about email operation limitations (Gmail API quotas)
+    """
+
+# ---------------------------
 # Initialize service on startup
 # ---------------------------
 
 if __name__ == "__main__":
     logger.info("🚀 Starting Gmail MCP Server...")
     
-    # Get user ID from environment variable or command line argument
-    user_id = os.getenv("USER_ID")
-    if not user_id:
-        if len(sys.argv) > 1:
-            user_id = sys.argv[1]
+    # Optional: Get user ID from command line argument for testing
+    user_id = None
+    if len(sys.argv) > 1:
+        user_id = sys.argv[1]
+    
+    # Initialize Gmail service if user_id provided (for testing purposes)
+    if user_id:
+        if initialize_gmail_service(user_id):
+            logger.info(f"✅ Gmail MCP Server ready with user: {user_id}")
         else:
-            logger.error("❌ USER_ID not provided. Please set USER_ID environment variable or pass as argument.")
-            logger.info("💡 Usage: python gmail_mcp_server.py <user_id>")
-            sys.exit(1)
-    
-    # Initialize Gmail service
-    if initialize_gmail_service(user_id):
-        logger.info("✅ Gmail MCP Server ready!")
+            logger.warning(f"⚠️  Gmail service initialization failed for user: {user_id}")
+            logger.info("💡 Tools will initialize service dynamically when called with user_id")
     else:
-        logger.warning("⚠️  Gmail service not initialized - tools will return error messages")
-        logger.info("💡 Please check your credentials in the database")
+        logger.info("✅ Gmail MCP Server ready! (No default user - tools will initialize dynamically)")
+        logger.info("💡 Use tools with user_id parameter for authentication")
     
-    # Run the server even if service initialization failed
+    # Run the server - tools will handle user authentication dynamically
     mcp.run()

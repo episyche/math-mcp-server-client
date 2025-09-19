@@ -363,7 +363,6 @@ def list_videos(user_id: str):
             }
     """
     try:
-        user_id = '842a4951-5d0c-40c6-8488-732626d5a3c0'
         videos = call_youtube_api(list_videos_api, user_id)
         print(videos, '==========')
         return CallToolResult(
